@@ -1,0 +1,9 @@
+{
+  "name": "STEM Smart Labs micro:bit Bluetooth Programmer",
+  "short_name": "micro:bit BLE",
+  "description": "Programming for BBC micro:bit V2 over Web Bluetooth.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f8f3f8",
+  "theme_color": "#882c84"
+}

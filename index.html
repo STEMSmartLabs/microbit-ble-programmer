@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#882c84">
+  <meta name="description" content="Program a BBC micro:bit MakeCode HEX over Bluetooth.">
+  <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
+  <link rel="icon" type="image/png" href="assets/stem-smart-labs-logo.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="background-orb orb-one"></div>
+  <div class="background-orb orb-two"></div>
+
+  <main class="app-shell">
+    <header class="brand-header">
+      <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
+      <div class="brand-copy">
+        <div class="eyebrow">Wireless Microbit Programming</div>
+        <h1>Microbit Bluetooth Programmer <small id="appVersion">v1</small></h1>
+        <p>Program user-program region of a BBC micro:bit V2 through Web Bluetooth.</p>
+      </div>
+    </header>
+
+    <div class="notice">
+      Programming is available whenever the connected micro:bit program exposes the Programming Service.
+    </div>
+
+    <section class="file-panel" aria-labelledby="fileHeading">
+      <div class="section-heading">
+        <div><span class="step">1</span><h2 id="fileHeading">Choose a MakeCode HEX</h2></div>
+        <strong id="fileState" data-state="neutral">Not selected</strong>
+      </div>
+      <label class="drop-zone" id="dropZone" for="hexFile">
+        <input id="hexFile" type="file" accept=".hex,text/plain">
+        <span class="upload-icon" aria-hidden="true">⇧</span>
+        <strong>Select or drop a .hex file here</strong>
+      </label>
+      <div class="file-result">
+        <strong id="fileName">No file selected</strong>
+        <span id="fileDetails"></span>
+      </div>
+    </section>
+
+    <section class="control-panel" aria-labelledby="connectHeading">
+      <div class="section-heading">
+        <div><span class="step">2</span><h2 id="connectHeading">Connect and program</h2></div>
+      </div>
+      <div class="actions">
+        <button id="connect" class="primary">Connect micro:bit</button>
+        <button id="program" class="accent" disabled>Program over Bluetooth</button>
+        <button id="disconnect" class="secondary" disabled>Disconnect</button>
+      </div>
+
+      <div class="state-grid">
+        <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
+        <div><span>micro:bit mode</span><strong id="modeState" data-state="neutral">Unknown</strong></div>
+        <div><span>Runtime</span><strong id="runtimeState" data-state="neutral">Not checked</strong></div>
+      </div>
+    </section>
+
+    <section class="progress-panel" aria-live="polite">
+      <div class="progress-row">
+        <strong id="progressPercent">0%</strong>
+        <span id="progressText">Waiting for a HEX file and micro:bit connection</span>
+      </div>
+      <progress id="progress" max="100" value="0"></progress>
+      <div class="progress-meta">
+        <span id="bytesText">0 B / 0 B</span>
+        <span id="timeText">Elapsed 00:00 · ETA --:--</span>
+      </div>
+    </section>
+
+    <section class="log-panel" aria-labelledby="logHeading">
+      <div class="log-heading">
+        <h2 id="logHeading">Activity and diagnostics</h2>
+        <div>
+          <button id="copyLog" class="text-button">Copy log</button>
+          <button id="clearLog" class="text-button">Clear</button>
+        </div>
+      </div>
+      <pre id="status">Ready.</pre>
+    </section>
+
+    <details class="help-panel">
+      <summary>Compatibility and safety notes</summary>
+      <ul>
+        <li>This tool performs MakeCode programming on micro:bit V2; it does not perform unrestricted full-firmware DFU.</li>
+        <li>A matching runtime is the safe path. When hashes differ, an explicit experimental force option is shown.</li>
+        <li>Forced mismatch programming rewrites only the user-program region and does not replace the installed runtime.</li>
+        <li>Keep the micro:bit powered and the browser tab open until completion.</li>
+      </ul>
+    </details>
+
+    <footer>
+      <span>STEM Smart Labs</span>
+      <span>Web Bluetooth · micro:bit programming</span>
+    </footer>
+  </main>
+
+  <dialog id="runtimeWarningDialog" class="warning-dialog">
+    <div class="warning-mark">!</div>
+    <h2>Runtime mismatch detected</h2>
+    <p>The HEX was compiled for a different MakeCode runtime. A forced transfer may install successfully but the program can fail, restart repeatedly or lose Bluetooth programming access.</p>
+    <div class="hash-grid">
+      <span>HEX runtime</span><code id="warningHexHash"></code>
+      <span>Device runtime</span><code id="warningDeviceHash"></code>
+    </div>
+    <p><strong>The installed runtime will not be updated.</strong> Use this only for controlled compatibility testing.</p>
+    <label class="acknowledge">
+      <input type="checkbox" id="forceAcknowledge">
+      <span>I understand the risk and want to force only the user-program partial program.</span>
+    </label>
+    <div class="dialog-actions">
+      <button id="cancelForce" class="secondary">Cancel</button>
+      <button id="confirmForce" class="danger" disabled>Force programming</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
