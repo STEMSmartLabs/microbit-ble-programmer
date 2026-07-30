@@ -434,7 +434,7 @@ async function releaseWakeLock() {
   wakeLock = null;
 }
 
-async function flash() {
+async function program() {
   if (flashInProgress) return log('Programming already in progress; duplicate click ignored.', 'warn');
   if (!preparedImage) throw new Error('Choose a compatible MakeCode HEX first');
   if (!device?.gatt?.connected || !characteristic) throw new Error('Connect the micro:bit first');
@@ -568,7 +568,7 @@ el('connect').addEventListener('click', () => connect().catch(error => {
   log(error.message, 'error');
   updateButtons();
 }));
-el('program').addEventListener('click', () => flash().catch(error => log(error.message, 'error')));
+el('program').addEventListener('click', () => program().catch(error => log(error.message, 'error')));
 el('disconnect').addEventListener('click', () => {
   if (flashInProgress) return log('Cannot disconnect while programming is in progress.', 'warn');
   device?.gatt?.disconnect();
