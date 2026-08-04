@@ -16,9 +16,9 @@ import {
   discoverDfuService,
   enterButtonlessDfu,
   requestDfuDevice,
-} from './dfu.js?v=2.2.8';
+} from './dfu.js?v=2.2.9';
 
-const APP_VERSION = '2.2.8';
+const APP_VERSION = '2.2.9';
 const PARTIAL_SERVICE_UUID = 'e97dd91d-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_CHARACTERISTIC_UUID = 'e97d3b10-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_BLOCK_SIZE = 64;
@@ -39,6 +39,7 @@ const DISCONNECT_PHASE = Object.freeze({
   MODE_SWITCH: 'mode-switch',
   BOND_AUTHORIZATION: 'bond-authorization',
   DFU_HANDOFF: 'dfu-handoff',
+  DFU_TRANSFER: 'dfu-transfer',
 });
 let disconnectPhase = DISCONNECT_PHASE.NONE;
 let buttonlessDfuCommandAttempted = false;
@@ -266,6 +267,8 @@ function handleApplicationDisconnected() {
   ) {
     log('Application disconnected after the Buttonless DFU command attempt. Secure DFU is not yet confirmed; enabling the DFU selector.');
     markDfuChooserReady();
+  } else if (phase === DISCONNECT_PHASE.DFU_TRANSFER) {
+    log('Secure DFU bootloader connection closed after transfer completion or transport cleanup.');
   } else {
     setState('connectionState', 'Disconnected', 'neutral');
     setState('modeState', 'Unknown', 'neutral');
@@ -904,7 +907,9 @@ async function selectDfuAndFlash() {
 
   const dfu = new NordicSecureDfu({
     log,
-    packetDelayMs: 2,
+    packetDelayMs: 4,
+    packetReceiptInterval: 12,
+    objectDrainDelayMs: 150,
     progress: event => {
       if (event.type === 'init') {
         setState('connectionState', bootloaderDevice.name || 'DFU bootloader', 'good');
@@ -928,6 +933,7 @@ async function selectDfuAndFlash() {
 
   try {
     setState('methodState', 'Full application DFU', 'busy');
+    disconnectPhase = DISCONNECT_PHASE.DFU_TRANSFER;
     log(`Starting full application DFU for ${packageToFlash.fileName}.`);
     await dfu.update(bootloaderDevice, packageToFlash.initPacket, packageToFlash.firmware);
     updateProgress(
@@ -959,8 +965,9 @@ async function selectDfuAndFlash() {
     log(error.message, 'error');
     el('progressText').textContent = `DFU stopped: ${error.message}`;
     setState('methodState', 'DFU retry available', 'warn');
-    log('The prepared DFU package remains available. Reopen the selector and choose another newly discovered entry. Cancel and enter DFU mode again to clear the rejected-entry list.', 'warn');
+    log('The prepared DFU package remains available. Reopen the selector and reselect the DFU device; the bootloader-reported offset and CRC will be used to resume safely. Cancel and enter DFU mode again only when the DFU device is no longer available.', 'warn');
   } finally {
+    disconnectPhase = DISCONNECT_PHASE.NONE;
     flashInProgress = false;
     await releaseWakeLock();
     updateButtons();

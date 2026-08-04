@@ -95,6 +95,12 @@ function concatBytes(...parts) {
   return output;
 }
 
+function uint16LE(value) {
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, value & 0xffff, true);
+  return bytes;
+}
+
 function uint32LE(value) {
   const bytes = new Uint8Array(4);
   new DataView(bytes.buffer).setUint32(0, value >>> 0, true);
@@ -377,7 +383,12 @@ export class NordicSecureDfu {
     log = () => {},
     progress = () => {},
     packetSize = 20,
-    packetDelayMs = 2,
+    packetDelayMs = 4,
+    packetReceiptInterval = 12,
+    receiptTimeoutMs = 10000,
+    objectDrainDelayMs = 150,
+    recoveryPacketDelayMs = 10,
+    maxTailRecoveryAttempts = 2,
     controlTimeoutMs = 12000,
     connectionTimeoutMs = 10000,
     discoveryTimeoutMs = 8000,
@@ -388,6 +399,11 @@ export class NordicSecureDfu {
     this.progress = progress;
     this.packetSize = packetSize;
     this.packetDelayMs = packetDelayMs;
+    this.packetReceiptInterval = Math.max(0, Math.floor(Number(packetReceiptInterval) || 0));
+    this.receiptTimeoutMs = Math.max(1000, Number(receiptTimeoutMs) || 10000);
+    this.objectDrainDelayMs = Math.max(0, Number(objectDrainDelayMs) || 0);
+    this.recoveryPacketDelayMs = Math.max(this.packetDelayMs, Number(recoveryPacketDelayMs) || this.packetDelayMs);
+    this.maxTailRecoveryAttempts = Math.max(0, Math.floor(Number(maxTailRecoveryAttempts) || 0));
     this.controlTimeoutMs = controlTimeoutMs;
     this.connectionTimeoutMs = connectionTimeoutMs;
     this.discoveryTimeoutMs = discoveryTimeoutMs;
@@ -400,6 +416,8 @@ export class NordicSecureDfu {
     this.control = null;
     this.packet = null;
     this.pendingControl = null;
+    this.pendingReceipt = null;
+    this.lastConfiguredPrn = null;
     this.notificationHandler = this.handleNotification.bind(this);
   }
 
@@ -488,10 +506,13 @@ export class NordicSecureDfu {
     this.control = null;
     this.packet = null;
     this.device = null;
+    this.lastConfiguredPrn = null;
     if (this.pendingControl) {
+      clearTimeout(this.pendingControl.timer);
       this.pendingControl.reject(new Error('DFU device disconnected'));
       this.pendingControl = null;
     }
+    this.rejectPendingReceipt(new Error('DFU device disconnected'));
   }
 
   handleNotification(event) {
@@ -500,23 +521,81 @@ export class NordicSecureDfu {
     const requestOpcode = bytes[1];
     const result = bytes[2];
     const pending = this.pendingControl;
-    if (!pending || pending.opcode !== requestOpcode) return;
 
-    clearTimeout(pending.timer);
-    this.pendingControl = null;
+    // Direct responses to a control operation always take precedence. Packet
+    // Receipt Notifications use the Calculate CRC response opcode (0x03), but
+    // arrive while no Calculate CRC control operation is pending.
+    if (pending && pending.opcode === requestOpcode) {
+      clearTimeout(pending.timer);
+      this.pendingControl = null;
 
-    if (result === RESULT.SUCCESS) {
-      pending.resolve(bytes.slice(3));
+      if (result === RESULT.SUCCESS) {
+        pending.resolve(bytes.slice(3));
+        return;
+      }
+
+      if (result === RESULT.EXTENDED_ERROR && bytes.length >= 4) {
+        const code = bytes[3];
+        pending.reject(new Error(`DFU extended error 0x${code.toString(16).padStart(2, '0')}: ${EXTENDED_ERROR_TEXT[code] || 'Unknown extended error'}`));
+        return;
+      }
+
+      pending.reject(new Error(`DFU error 0x${result.toString(16).padStart(2, '0')}: ${RESULT_TEXT[result] || 'Unknown result'}`));
       return;
     }
 
-    if (result === RESULT.EXTENDED_ERROR && bytes.length >= 4) {
-      const code = bytes[3];
-      pending.reject(new Error(`DFU extended error 0x${code.toString(16).padStart(2, '0')}: ${EXTENDED_ERROR_TEXT[code] || 'Unknown extended error'}`));
+    if (requestOpcode !== OP.CRC || !this.pendingReceipt) return;
+    const receipt = this.pendingReceipt;
+    clearTimeout(receipt.timer);
+    this.pendingReceipt = null;
+
+    if (result !== RESULT.SUCCESS) {
+      const error = new Error(`DFU packet receipt failed with result 0x${result.toString(16).padStart(2, '0')}`);
+      error.code = 'DFU_PRN_ERROR';
+      receipt.reject(error);
+      return;
+    }
+    if (bytes.length < 11) {
+      const error = new Error('Short DFU Packet Receipt Notification');
+      error.code = 'DFU_PRN_ERROR';
+      receipt.reject(error);
       return;
     }
 
-    pending.reject(new Error(`DFU error 0x${result.toString(16).padStart(2, '0')}: ${RESULT_TEXT[result] || 'Unknown result'}`));
+    const view = new DataView(bytes.buffer, bytes.byteOffset + 3, bytes.byteLength - 3);
+    const offset = view.getUint32(0, true);
+    const crc = view.getUint32(4, true);
+    if (offset !== receipt.expectedOffset || crc !== receipt.expectedCrc) {
+      const error = new Error(`DFU packet receipt mismatch: expected offset ${receipt.expectedOffset} CRC 0x${receipt.expectedCrc.toString(16).padStart(8, '0')}, received offset ${offset} CRC 0x${crc.toString(16).padStart(8, '0')}`);
+      error.code = 'DFU_PRN_MISMATCH';
+      error.offset = offset;
+      error.crc = crc;
+      receipt.reject(error);
+      return;
+    }
+    receipt.resolve({ offset, crc });
+  }
+
+  rejectPendingReceipt(error) {
+    if (!this.pendingReceipt) return;
+    const receipt = this.pendingReceipt;
+    clearTimeout(receipt.timer);
+    this.pendingReceipt = null;
+    receipt.reject(error);
+  }
+
+  waitForPacketReceipt(expectedOffset, expectedCrc) {
+    if (this.pendingReceipt) throw new Error('A DFU Packet Receipt Notification is already pending');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingReceipt?.expectedOffset === expectedOffset) this.pendingReceipt = null;
+        const error = new Error(`Timed out waiting for DFU packet receipt at byte ${expectedOffset}`);
+        error.code = 'DFU_PRN_TIMEOUT';
+        error.offset = expectedOffset;
+        reject(error);
+      }, this.receiptTimeoutMs);
+      this.pendingReceipt = { expectedOffset, expectedCrc: expectedCrc >>> 0, resolve, reject, timer };
+    });
   }
 
   async sendControl(opcode, payload = new Uint8Array()) {
@@ -540,6 +619,19 @@ export class NordicSecureDfu {
       throw error;
     }
     return response;
+  }
+
+  async setPacketReceiptNotifications(interval, { announce = false } = {}) {
+    const normalized = Math.max(0, Math.min(0xffff, Math.floor(Number(interval) || 0)));
+    await this.sendControl(OP.SET_PRN, uint16LE(normalized));
+    if (announce || this.lastConfiguredPrn !== normalized) {
+      if (normalized > 0) {
+        this.log(`DFU flow control enabled: validating every ${normalized} data packets with Packet Receipt Notifications.`);
+      } else {
+        this.log('DFU Packet Receipt Notifications disabled for the init packet.');
+      }
+    }
+    this.lastConfiguredPrn = normalized;
   }
 
   async selectObject(type) {
@@ -571,14 +663,39 @@ export class NordicSecureDfu {
     await this.sendControl(OP.EXECUTE);
   }
 
-  async writePackets(data, baseOffset, type) {
+  async writePackets(data, baseOffset, type, {
+    verificationData = null,
+    receiptInterval = 0,
+    packetDelayMs = this.packetDelayMs,
+  } = {}) {
+    let packetsSinceReceipt = 0;
     for (let offset = 0; offset < data.length; offset += this.packetSize) {
       const end = Math.min(offset + this.packetSize, data.length);
-      await writeWithoutResponse(this.packet, data.slice(offset, end));
       const written = baseOffset + end;
+      packetsSinceReceipt++;
+      const receiptDue = Boolean(
+        receiptInterval > 0
+        && verificationData
+        && packetsSinceReceipt >= receiptInterval
+      );
+      const receiptPromise = receiptDue
+        ? this.waitForPacketReceipt(written, crc32(verificationData.slice(0, written)))
+        : null;
+
+      try {
+        await writeWithoutResponse(this.packet, data.slice(offset, end));
+      } catch (error) {
+        this.rejectPendingReceipt(error);
+        throw error;
+      }
       this.progress({ type, currentBytes: written });
 
-      if (this.packetDelayMs > 0) await sleep(this.packetDelayMs);
+      if (receiptPromise) {
+        await receiptPromise;
+        packetsSinceReceipt = 0;
+      }
+
+      if (packetDelayMs > 0) await sleep(packetDelayMs);
       else if (((offset / this.packetSize) & 0x0f) === 0x0f) await sleep(0);
     }
   }
@@ -601,9 +718,11 @@ export class NordicSecureDfu {
       throw new Error(`Init packet is ${initPacket.length} B but the bootloader accepts ${selected.maxSize} B command objects`);
     }
 
+    await this.setPacketReceiptNotifications(0);
     await this.createObject(OBJECT.COMMAND, initPacket.length);
     this.progress({ type: 'init', currentBytes: 0, totalBytes: initPacket.length });
     await this.writePackets(initPacket, 0, 'init');
+    if (this.objectDrainDelayMs > 0) await sleep(this.objectDrainDelayMs);
     const checksum = await this.checksum();
     if (checksum.offset !== initPacket.length || !this.verifyPrefix(initPacket, checksum.offset, checksum.crc)) {
       throw new Error('Init packet CRC validation failed');
@@ -634,6 +753,7 @@ export class NordicSecureDfu {
       return;
     }
 
+    let announcedPrn = false;
     while (offset < firmware.length) {
       const objectStart = Math.floor(offset / maxSize) * maxSize;
       const objectEnd = Math.min(objectStart + maxSize, firmware.length);
@@ -644,10 +764,53 @@ export class NordicSecureDfu {
         this.log(`Resuming data object at ${offset} of ${objectEnd}.`);
       }
 
-      await this.writePackets(firmware.slice(offset, objectEnd), offset, 'firmware');
-      const checksum = await this.checksum();
-      if (checksum.offset !== objectEnd || !this.verifyPrefix(firmware, checksum.offset, checksum.crc)) {
-        throw new Error(`Firmware CRC validation failed at byte ${checksum.offset}`);
+      let sendOffset = offset;
+      let recoveryAttempt = 0;
+      while (sendOffset < objectEnd) {
+        const recoveringTail = recoveryAttempt > 0;
+        const receiptInterval = recoveringTail ? 1 : this.packetReceiptInterval;
+        await this.setPacketReceiptNotifications(receiptInterval, { announce: !announcedPrn || recoveringTail });
+        announcedPrn = true;
+
+        await this.writePackets(
+          firmware.slice(sendOffset, objectEnd),
+          sendOffset,
+          'firmware',
+          {
+            verificationData: firmware,
+            receiptInterval,
+            packetDelayMs: recoveringTail ? this.recoveryPacketDelayMs : this.packetDelayMs,
+          },
+        );
+
+        // writeValueWithoutResponse resolves when the browser accepts a packet
+        // for transmission, not necessarily after the controller has delivered
+        // it. Give the final queued writes time to drain before asking the
+        // bootloader to calculate its CRC.
+        if (this.objectDrainDelayMs > 0) await sleep(this.objectDrainDelayMs);
+        const checksum = await this.checksum();
+        const prefixMatches = this.verifyPrefix(firmware, checksum.offset, checksum.crc);
+
+        if (checksum.offset === objectEnd && prefixMatches) {
+          sendOffset = objectEnd;
+          break;
+        }
+
+        if (!prefixMatches) {
+          throw new Error(`Firmware CRC mismatch at byte ${checksum.offset}: the received data does not match the firmware prefix`);
+        }
+        if (checksum.offset < sendOffset || checksum.offset > objectEnd) {
+          throw new Error(`Unexpected DFU firmware offset ${checksum.offset}; expected ${sendOffset}–${objectEnd}`);
+        }
+
+        recoveryAttempt++;
+        if (recoveryAttempt > this.maxTailRecoveryAttempts) {
+          throw new Error(`Firmware transfer remained short at byte ${checksum.offset} after ${this.maxTailRecoveryAttempts} recovery attempt${this.maxTailRecoveryAttempts === 1 ? '' : 's'}`);
+        }
+
+        const missing = objectEnd - checksum.offset;
+        this.log(`Bootloader validated ${checksum.offset} bytes but the current object ends at ${objectEnd}; retransmitting the missing ${missing} byte${missing === 1 ? '' : 's'} with per-packet receipts.`, 'warn');
+        sendOffset = checksum.offset;
       }
 
       await this.execute();
