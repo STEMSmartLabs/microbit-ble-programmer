@@ -55,7 +55,7 @@
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">During a full flash, approve any Bluetooth connection or pairing prompt shown by the browser or device. After the Buttonless DFU command attempt disconnects the application, open the inline blue DFU selector and wait for the rebooted device entry to become discoverable. The DFU entry may be unnamed or may retain the BBC micro:bit name.</p>
+      <p class="chooser-help">During a full flash, the app first completes Bluetooth pairing without sending the DFU reboot command. A tick may appear and the old program may restart briefly. The app then reconnects automatically and sends the Buttonless DFU command as a separate second phase. Open the blue DFU selector only after that post-command disconnect.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.2.7</span>
+      <span id="buildLabel">Build 2.2.8</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Approve any Bluetooth connection or pairing prompt shown by the browser or device. After the app reports that the application disconnected following the Buttonless DFU command attempt, open the blue DFU selector and wait for the rebooted device identity to appear. Discovery can take several seconds or longer; choose the entry that appeared after the disconnect. It may be unnamed or may still display the BBC micro:bit name. The app verifies Secure DFU control 0001 and packet 0002 before sending firmware.</p>
+    <p>Full DFU now runs in two phases. First, complete any Bluetooth pairing or authorization prompt. A tick may appear and the installed program may restart; the app treats that as pairing completion, reconnects automatically and keeps the DFU selector disabled. Second, the app sends the Buttonless DFU reboot command on the bonded link. Open the blue DFU selector only after the app reports that this second command caused the application to disconnect. The app verifies Secure DFU control 0001 and packet 0002 before sending firmware.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -129,6 +129,6 @@
 
 
 
-  <script type="module" src="./app.js?v=2.2.7"></script>
+  <script type="module" src="./app.js?v=2.2.8"></script>
 </body>
 </html>
