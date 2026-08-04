@@ -1,13 +1,16 @@
 /**
- * Core HEX parsing helpers for the STEM Smart Labs micro:bit BLE Flasher.
+ * Core HEX parsing and micro:bit V2 firmware preparation helpers.
  *
- * Universal HEX separation logic is adapted from the Micro:bit Educational
- * Foundation's microbit-universal-hex project (MIT licensed). See
- * THIRD_PARTY_NOTICES.md.
+ * Universal HEX separation is adapted from the Micro:bit Educational
+ * Foundation's universal-hex tooling. Full-DFU application extraction follows
+ * the micro:bit Android application region: 0x1C000..0x77000.
  */
 
+export const V2_BOARD_IDS = Object.freeze([0x9903, 0x9904]);
 export const V2_BOARD_ID = 0x9903;
 export const V2_FLASH_END = 0x80000;
+export const V2_APPLICATION_START = 0x1c000;
+export const V2_APPLICATION_END = 0x77000;
 export const DEFAULT_V2_FLASH_USABLE_END = 0x73000;
 export const MAGIC_MARKER = hexBytes('708E3B92C615A841C49866C975EE5197');
 
@@ -93,11 +96,17 @@ export function isUniversalHex(hexText) {
   }
 }
 
+function normalizeWantedBoardIds(wantedBoardIds) {
+  if (Array.isArray(wantedBoardIds)) return wantedBoardIds;
+  return [wantedBoardIds];
+}
+
 /**
- * Extracts the requested board image from a Universal HEX and returns a normal
- * Intel HEX. Only the record types required for separation are implemented.
+ * Extracts the requested micro:bit image from a Universal HEX and returns a
+ * normal Intel HEX. V2 board IDs 0x9903 and 0x9904 are accepted by default.
  */
-export function extractUniversalHexImage(universalHex, wantedBoardId = V2_BOARD_ID) {
+export function extractUniversalHexImage(universalHex, wantedBoardIds = V2_BOARD_IDS) {
+  const wanted = new Set(normalizeWantedBoardIds(wantedBoardIds));
   const lines = recordLines(universalHex);
   if (!lines.length) throw new Error('Empty Universal HEX');
 
@@ -108,68 +117,67 @@ export function extractUniversalHexImage(universalHex, wantedBoardId = V2_BOARD_
     throw new Error('Universal HEX format is invalid');
   }
 
-  const images = new Map();
+  const records = [];
+  const matchedBoardIds = new Set();
   let currentBoardId = null;
+  let currentWanted = false;
   let currentEla = null;
+  let lastOutputEla = null;
 
   for (let index = 0; index < parsed.length; index++) {
     const record = parsed[index];
 
     if (record.type === RECORD_TYPE.EXTENDED_LINEAR_ADDRESS) {
       const next = parsed[index + 1];
+      currentEla = record.raw;
+
       if (next?.type === RECORD_TYPE.BLOCK_START) {
         if (next.data.length !== 4 || next.data[2] !== 0xc0 || next.data[3] !== 0xde) {
           throw new Error('Universal HEX block-start record is invalid');
         }
         currentBoardId = (next.data[0] << 8) | next.data[1];
-        currentEla = record.raw;
-        if (!images.has(currentBoardId)) images.set(currentBoardId, { records: [], lastEla: null });
-        const image = images.get(currentBoardId);
-        if (image.lastEla !== record.raw) {
-          image.records.push(record.raw);
-          image.lastEla = record.raw;
+        currentWanted = wanted.has(currentBoardId);
+        if (currentWanted) {
+          matchedBoardIds.add(currentBoardId);
+          if (lastOutputEla !== currentEla) {
+            records.push(currentEla);
+            lastOutputEla = currentEla;
+          }
         }
         index++;
         continue;
       }
 
-      if (currentBoardId !== null) {
-        const image = images.get(currentBoardId);
-        if (image.lastEla !== record.raw) {
-          image.records.push(record.raw);
-          image.lastEla = record.raw;
-        }
+      if (currentWanted && lastOutputEla !== currentEla) {
+        records.push(currentEla);
+        lastOutputEla = currentEla;
       }
-      currentEla = record.raw;
       continue;
     }
 
-    if (currentBoardId === null) continue;
-    const image = images.get(currentBoardId);
+    if (record.type === RECORD_TYPE.EOF) break;
+    if (!currentWanted) continue;
 
     if (record.type === RECORD_TYPE.CUSTOM_DATA) {
-      image.records.push(makeRecord(record.address, RECORD_TYPE.DATA, record.data));
+      records.push(makeRecord(record.address, RECORD_TYPE.DATA, record.data));
     } else if ([
       RECORD_TYPE.DATA,
       RECORD_TYPE.EXTENDED_SEGMENT_ADDRESS,
       RECORD_TYPE.START_SEGMENT_ADDRESS,
     ].includes(record.type)) {
-      image.records.push(record.raw);
-    } else if (record.type === RECORD_TYPE.EOF) {
-      image.records.push(record.raw);
-    } else if (record.type === RECORD_TYPE.BLOCK_END || record.type === RECORD_TYPE.PADDED_DATA) {
-      // Deliberately ignored; these records only frame/pad a Universal HEX block.
-    }
-
-    if (currentEla && image.lastEla !== currentEla) {
-      image.lastEla = currentEla;
+      records.push(record.raw);
     }
   }
 
-  const selected = images.get(wantedBoardId);
-  if (!selected) throw new Error('Universal HEX does not contain a micro:bit V2 image');
-  if (selected.records.at(-1) !== ':00000001FF') selected.records.push(':00000001FF');
-  return `${selected.records.join('\n')}\n`;
+  if (!matchedBoardIds.size || !records.length) {
+    throw new Error('Universal HEX does not contain a micro:bit V2 image');
+  }
+  records.push(':00000001FF');
+  return {
+    boardId: [...matchedBoardIds][0],
+    boardIds: [...matchedBoardIds],
+    intelHex: `${records.join('\n')}\n`,
+  };
 }
 
 export function parseIntelHex(hexText, flashEnd = V2_FLASH_END) {
@@ -184,9 +192,11 @@ export function parseIntelHex(hexText, flashEnd = V2_FLASH_END) {
   let dataRecords = 0;
   let copiedBytes = 0;
   let highestWritten = 0;
+  let lowestWritten = flashEnd;
   let ignoredHighRecords = 0;
   let sawEof = false;
   let lineNumber = 0;
+  const writtenRanges = [];
 
   for (const rawLine of hexText.split(/\r?\n/)) {
     lineNumber++;
@@ -212,6 +222,8 @@ export function parseIntelHex(hexText, flashEnd = V2_FLASH_END) {
         output.set(record.data.slice(sourceStart, sourceStart + length), copyStart);
         copiedBytes += length;
         highestWritten = Math.max(highestWritten, copyEnd);
+        lowestWritten = Math.min(lowestWritten, copyStart);
+        writtenRanges.push({ start: copyStart, end: copyEnd });
       }
     } else if (record.type === RECORD_TYPE.EOF) {
       sawEof = true;
@@ -227,49 +239,176 @@ export function parseIntelHex(hexText, flashEnd = V2_FLASH_END) {
 
   if (!dataRecords || !copiedBytes) throw new Error('The selected file contains no micro:bit V2 flash data');
 
-  return { binary: output, copiedBytes, highestWritten, ignoredHighRecords, dataRecords, sawEof };
+  return {
+    binary: output,
+    copiedBytes,
+    highestWritten,
+    lowestWritten: lowestWritten === flashEnd ? 0 : lowestWritten,
+    ignoredHighRecords,
+    dataRecords,
+    sawEof,
+    writtenRanges,
+  };
 }
 
-export function findMarker(binary, marker = MAGIC_MARKER, alignment = 16) {
+export function findMarkers(binary, marker = MAGIC_MARKER, alignment = 16) {
+  const matches = [];
   for (let offset = 0; offset + marker.length <= binary.length; offset += alignment) {
-    let matches = true;
+    let found = true;
     for (let index = 0; index < marker.length; index++) {
       if (binary[offset + index] !== marker[index]) {
-        matches = false;
+        found = false;
         break;
       }
     }
-    if (matches) return offset;
+    if (found) matches.push(offset);
   }
-  return -1;
+  return matches;
 }
 
-export function prepareHex(hexText) {
+export function findMarker(binary, marker = MAGIC_MARKER, alignment = 16) {
+  return findMarkers(binary, marker, alignment)[0] ?? -1;
+}
+
+function validHash(hash) {
+  return !/^(00)+$/.test(hash) && !/^(FF)+$/.test(hash);
+}
+
+function markerCandidates(binary) {
+  return findMarkers(binary)
+    .filter(offset => offset + 32 <= binary.length)
+    .map(offset => ({
+      offset,
+      runtimeHash: toHex(binary.slice(offset + 16, offset + 24)),
+      programHash: toHex(binary.slice(offset + 24, offset + 32)),
+    }))
+    .filter(candidate => validHash(candidate.runtimeHash) && validHash(candidate.programHash));
+}
+
+function align4(value) {
+  return (value + 3) & ~3;
+}
+
+export function extractV2ApplicationBinary(parsed) {
+  const relevant = parsed.writtenRanges
+    .map(range => ({
+      start: Math.max(range.start, V2_APPLICATION_START),
+      end: Math.min(range.end, V2_APPLICATION_END),
+    }))
+    .filter(range => range.end > range.start);
+
+  if (!relevant.length) {
+    throw new Error(`HEX contains no application data in ${formatHexAddress(V2_APPLICATION_START)}–${formatHexAddress(V2_APPLICATION_END)}`);
+  }
+
+  const highest = Math.max(...relevant.map(range => range.end));
+  const firstPage = parsed.binary.slice(V2_APPLICATION_START, Math.min(V2_APPLICATION_START + 32, highest));
+  if (![...firstPage].some(value => value !== 0xff)) {
+    throw new Error(`HEX does not contain an application vector table at ${formatHexAddress(V2_APPLICATION_START)}`);
+  }
+
+  const length = align4(highest - V2_APPLICATION_START);
+  if (length <= 0 || V2_APPLICATION_START + length > V2_APPLICATION_END) {
+    throw new Error('HEX application image exceeds the micro:bit V2 DFU application region');
+  }
+
+  const applicationBin = parsed.binary.slice(V2_APPLICATION_START, V2_APPLICATION_START + length);
+  return {
+    applicationBin,
+    applicationStart: V2_APPLICATION_START,
+    applicationEnd: V2_APPLICATION_START + length,
+    applicationBytes: length,
+  };
+}
+
+export function selectMarkerCandidate(image, candidate) {
+  if (!candidate) {
+    return {
+      ...image,
+      magicOffset: -1,
+      runtimeHash: null,
+      programHash: null,
+    };
+  }
+  return {
+    ...image,
+    magicOffset: candidate.offset,
+    runtimeHash: candidate.runtimeHash,
+    programHash: candidate.programHash,
+  };
+}
+
+/**
+ * Parses a V2 MakeCode/Intel HEX for both partial and full application DFU.
+ * A valid application can be full-flashed even if no partial-flash marker is
+ * present. markerCandidates is empty in that case.
+ */
+export function prepareFirmware(hexText) {
   if (typeof hexText !== 'string' || !hexText.trim()) throw new Error('The selected HEX file is empty');
 
   const universal = isUniversalHex(hexText);
-  const intelHex = universal ? extractUniversalHexImage(hexText, V2_BOARD_ID) : hexText;
+  let boardId = V2_BOARD_ID;
+  let intelHex = hexText;
+  if (universal) {
+    const extracted = extractUniversalHexImage(hexText, V2_BOARD_IDS);
+    boardId = extracted.boardId;
+    intelHex = extracted.intelHex;
+  }
+
   const parsed = parseIntelHex(intelHex, V2_FLASH_END);
-  const magicOffset = findMarker(parsed.binary);
+  const candidates = markerCandidates(parsed.binary);
+  const application = extractV2ApplicationBinary(parsed);
+  const selected = candidates[0] ?? null;
 
-  if (magicOffset < 0) throw new Error('Not a compatible MakeCode partial-flash HEX');
-  if (magicOffset + 32 > parsed.binary.length) throw new Error('MakeCode metadata block is incomplete');
-  if (magicOffset >= V2_FLASH_END) throw new Error('MakeCode program starts outside micro:bit V2 flash');
-
-  const runtimeHash = toHex(parsed.binary.slice(magicOffset + 16, magicOffset + 24));
-  const programHash = toHex(parsed.binary.slice(magicOffset + 24, magicOffset + 32));
-  if (/^(00)+$/.test(runtimeHash) || /^(FF)+$/.test(runtimeHash)) throw new Error('MakeCode runtime hash is invalid');
-  if (/^(00)+$/.test(programHash) || /^(FF)+$/.test(programHash)) throw new Error('MakeCode program hash is invalid');
-
-  return {
+  return selectMarkerCandidate({
     ...parsed,
     universal,
-    magicOffset,
-    runtimeHash,
-    programHash,
+    boardId,
+    intelHex,
+    markerCandidates: candidates,
     estimatedTransferEnd: DEFAULT_V2_FLASH_USABLE_END,
-    estimatedTransferBytes: Math.max(0, DEFAULT_V2_FLASH_USABLE_END - magicOffset),
-  };
+    estimatedTransferBytes: selected
+      ? Math.max(0, DEFAULT_V2_FLASH_USABLE_END - selected.offset)
+      : 0,
+    ...application,
+  }, selected);
+}
+
+/** Backwards-compatible partial-flash parser. */
+export function prepareHex(hexText) {
+  const image = prepareFirmware(hexText);
+  if (!image.markerCandidates.length) throw new Error('Not a compatible MakeCode partial-flash HEX');
+  return image;
+}
+
+/**
+ * Creates the 56-byte micro:bit V2 application init packet accepted by the
+ * Foundation V2 bootloader. The SHA-256 digest is byte-reversed to match the
+ * bootloader validation routine. When SubtleCrypto is unavailable, hash_size
+ * is set to zero, which the bootloader treats as no hash validation.
+ */
+export async function createMicrobitV2InitPacket(applicationBin, cryptoProvider = globalThis.crypto) {
+  if (!(applicationBin instanceof Uint8Array) || applicationBin.length === 0) {
+    throw new Error('Application binary is empty');
+  }
+
+  let hash = new Uint8Array(32);
+  let hashSize = 0;
+  if (cryptoProvider?.subtle) {
+    const digest = await cryptoProvider.subtle.digest('SHA-256', applicationBin);
+    hash = new Uint8Array(digest);
+    hash.reverse();
+    hashSize = 32;
+  }
+
+  const packet = new Uint8Array(56);
+  const view = new DataView(packet.buffer);
+  packet.set(new TextEncoder().encode('microbit_app'), 0);
+  view.setUint32(12, 1, true);
+  view.setUint32(16, applicationBin.length, true);
+  view.setUint32(20, hashSize, true);
+  packet.set(hash, 24);
+  return packet;
 }
 
 export function formatHexAddress(value) {
