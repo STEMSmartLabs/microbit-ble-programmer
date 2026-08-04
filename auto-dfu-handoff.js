@@ -1,15 +1,13 @@
 /**
- * Automatic Secure DFU handoff layered on top of the proven v2.2.9 app.
+ * Automatic Secure DFU handoff for v2.4.0.
  *
- * One automatic connection attempt reuses the already permitted application
- * BluetoothDevice. If it still exposes application Buttonless DFU (0004), or
- * otherwise fails, automatic handoff stops and the normal manual DfuTarg
- * chooser remains available. The automatic attempt is reset only when the
- * pending DFU handoff is cancelled, completed, or otherwise hidden.
+ * The original permitted BluetoothDevice is tried once after a possible or
+ * confirmed DFU reboot. A failed GATT verification never re-arms the automatic
+ * click. The normal browser chooser remains the manual fallback.
  */
-import { AutomaticDfuHandoffState } from './handoff-state.js?v=2.3.1';
+import { AutomaticDfuHandoffState } from './handoff-state.js?v=2.4.0';
 
-const HANDOFF_VERSION = '2.3.1';
+const HANDOFF_VERSION = '2.4.0';
 const bluetooth = navigator.bluetooth;
 const originalRequestDevice = bluetooth?.requestDevice?.bind(bluetooth);
 const handoffState = new AutomaticDfuHandoffState();
@@ -34,8 +32,6 @@ function isDfuRequest(options = {}) {
 if (bluetooth && originalRequestDevice) {
   bluetooth.requestDevice = async options => {
     if (isDfuRequest(options) && automaticRequestArmed && targetMicrobit) {
-      // Consume the automatic permission reuse exactly once. Any later DFU
-      // request in this handoff must open the real browser chooser.
       automaticRequestArmed = false;
       return targetMicrobit;
     }
@@ -72,11 +68,7 @@ function watchDfuSelector() {
 
     if (action === 'start-auto') {
       automaticRequestArmed = true;
-      button.textContent = 'Connecting to rebooted micro:bit once…';
-
-      // The app deliberately enables this button only after the application
-      // disconnect. Trigger one click; subsequent disabled/enabled transitions
-      // during the connection attempt must never re-arm another automatic click.
+      button.textContent = 'Checking the rebooted micro:bit once…';
       queueMicrotask(() => {
         if (!button.hidden && !button.disabled && automaticRequestArmed) {
           button.click();
@@ -90,8 +82,6 @@ function watchDfuSelector() {
       return;
     }
 
-    // The one automatic attempt has completed or no original target is
-    // available. Leave a normal user-gesture picker as the only next action.
     automaticRequestArmed = false;
     button.textContent = 'Select DfuTarg manually';
   };
@@ -103,7 +93,7 @@ function watchDfuSelector() {
   evaluate();
 }
 
-await import('./app.js?v=2.2.9');
+await import('./app.js?v=2.4.0');
 
 const appVersion = document.getElementById('appVersion');
 const buildLabel = document.getElementById('buildLabel');
@@ -111,6 +101,6 @@ const status = document.getElementById('status');
 if (appVersion) appVersion.textContent = `v${HANDOFF_VERSION}`;
 if (buildLabel) buildLabel.textContent = `Build ${HANDOFF_VERSION}`;
 if (status) {
-  status.textContent += `\nAutomatic DFU handoff layer v${HANDOFF_VERSION}: one automatic target attempt, then manual fallback.`;
+  status.textContent += `\nDFU entry state machine v${HANDOFF_VERSION}: bond verification, strict command outcome, one automatic target check.`;
 }
 watchDfuSelector();

@@ -16,9 +16,10 @@ import {
   discoverDfuService,
   enterButtonlessDfu,
   requestDfuDevice,
-} from './dfu.js?v=2.2.9';
+} from './dfu.js?v=2.4.0';
+import { classifyDfuEntry } from './dfu-entry-state.js?v=2.4.0';
 
-const APP_VERSION = '2.2.9';
+const APP_VERSION = '2.4.0';
 const PARTIAL_SERVICE_UUID = 'e97dd91d-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_CHARACTERISTIC_UUID = 'e97d3b10-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_BLOCK_SIZE = 64;
@@ -257,16 +258,15 @@ function handleApplicationDisconnected() {
     setState('modeState', 'Mode switch in progress', 'busy');
     log('Application disconnected while switching to pairing/programming mode. The DFU selector remains disabled.');
   } else if (phase === DISCONNECT_PHASE.BOND_AUTHORIZATION) {
-    setState('connectionState', 'Pairing completed; reconnecting', 'busy');
-    setState('modeState', 'Bluetooth bond established', 'busy');
-    log('Application disconnected after Bluetooth pairing/authorization. The old program may restart briefly. The DFU selector remains disabled while the app reconnects and sends the Buttonless DFU command.');
+    setState('connectionState', 'Pairing restart observed', 'busy');
+    setState('modeState', 'Authorization verification pending', 'busy');
+    log('Application disconnected during Bluetooth pairing/authorization. This is not proof that the bond succeeded; the app will reconnect and verify secured access before sending the DFU command.');
   } else if (
     phase === DISCONNECT_PHASE.DFU_HANDOFF
     && buttonlessDfuCommandAttempted
     && pendingDfu
   ) {
-    log('Application disconnected after the Buttonless DFU command attempt. Secure DFU is not yet confirmed; enabling the DFU selector.');
-    markDfuChooserReady();
+    log('Application disconnected after the Buttonless DFU command attempt. Disconnect alone does not enable DFU selection; waiting for the secured-write/response outcome.');
   } else if (phase === DISCONNECT_PHASE.DFU_TRANSFER) {
     log('Secure DFU bootloader connection closed after transfer completion or transport cleanup.');
   } else {
@@ -274,7 +274,7 @@ function handleApplicationDisconnected() {
     setState('modeState', 'Unknown', 'neutral');
     setState('serviceState', 'Not checked', 'neutral');
     log(pendingDfu
-      ? 'Application disconnected, but no Buttonless DFU command attempt was active. The DFU selector remains disabled.'
+      ? 'Application disconnected while a DFU package is pending.'
       : 'Disconnected.');
   }
   updateButtons();
@@ -694,48 +694,74 @@ async function ensurePairingModeForFullDfu(info) {
 async function establishBondBeforeFullDfu() {
   setState('connectionState', 'Completing Bluetooth pairing', 'busy');
   setState('modeState', 'Pairing/authorization', 'busy');
-  el('progressText').textContent = 'Complete Bluetooth pairing; the DFU command will be sent only after pairing finishes';
-  log('Phase 1 of 2: establishing the Bluetooth bond. The app will not send the Buttonless DFU reboot command during this pairing step.');
+  el('progressText').textContent = 'Verifying Bluetooth pairing on this phone or computer';
+  log('Phase 1 of 2: establishing and verifying the Bluetooth bond on the current host. A disconnect alone will not be treated as success.');
 
-  disconnectPhase = DISCONNECT_PHASE.BOND_AUTHORIZATION;
-  let authorization;
-  try {
-    authorization = await authorizeBondedButtonlessDfu(applicationDevice, {
-      log,
-      timeoutMs: 18000,
-    });
-  } finally {
-    disconnectPhase = DISCONNECT_PHASE.NONE;
-  }
+  const maxAuthorizationAttempts = 2;
+  let authorization = null;
+  let authorizationVerified = false;
 
-  if (authorization.disconnected || !applicationDevice?.gatt?.connected) {
-    await reconnectAfterBondAuthorization();
-  } else {
-    // Refresh our characteristic handles after authorization. This also makes
-    // the second phase independent of the characteristic instance used to
-    // trigger pairing.
-    await attachApplicationServices();
+  for (let attempt = 1; attempt <= maxAuthorizationAttempts; attempt++) {
+    if (attempt > 1) {
+      await quiescePartialNotificationsBeforeDfu();
+      log(`Retrying bonded DFU authorization after reconnect (${attempt}/${maxAuthorizationAttempts})…`);
+    }
+
+    disconnectPhase = DISCONNECT_PHASE.BOND_AUTHORIZATION;
+    try {
+      authorization = await authorizeBondedButtonlessDfu(applicationDevice, {
+        log,
+        timeoutMs: 8000,
+      });
+    } finally {
+      disconnectPhase = DISCONNECT_PHASE.NONE;
+    }
+
+    if (authorization.disconnected || !applicationDevice?.gatt?.connected) {
+      await reconnectAfterBondAuthorization();
+    } else {
+      await attachApplicationServices();
+    }
+
+    if (!buttonlessAvailable) {
+      throw new Error('Buttonless DFU is not available after the pairing attempt');
+    }
+
+    if (authorization.verified) {
+      authorizationVerified = true;
+      log(`Bluetooth bond verified on authorization attempt ${attempt}.`);
+      break;
+    }
+
+    log(`Authorization attempt ${attempt} did not prove bonded access to characteristic 0004.`, 'warn');
   }
 
   let postPairingInfo = null;
   if (partialCharacteristic) {
     try {
       postPairingInfo = await readFlashInfo(preparedFirmware);
-      log(`Bluetooth pairing phase complete; application mode is ${postPairingInfo.mode === 0 ? 'pairing/programming' : postPairingInfo.mode === 1 ? 'application' : `unknown (${postPairingInfo.mode})`}.`);
+      log(`Application mode after pairing attempts: ${postPairingInfo.mode === 0 ? 'pairing/programming' : postPairingInfo.mode === 1 ? 'application' : `unknown (${postPairingInfo.mode})`}.`);
     } catch (error) {
-      log(`Could not re-read Partial Programming status after pairing: ${error.message}. Continuing because Buttonless DFU is available.`, 'warn');
+      log(`Could not re-read Partial Programming status after pairing: ${error.message}.`, 'warn');
     }
   }
 
-  if (!buttonlessAvailable) {
-    throw new Error('Buttonless DFU is not available after Bluetooth pairing');
+  setState('connectionState', applicationDevice.name || 'Connected', 'good');
+  if (authorizationVerified) {
+    setState('modeState', 'Bond verified', 'good');
+    el('progressText').textContent = 'Bluetooth bond verified — sending the Buttonless DFU command';
+    log('Phase 2 of 2: bonded access is verified. Sending the Buttonless DFU command on the current application link.');
+  } else {
+    setState('modeState', 'Bond not verified', 'warn');
+    el('progressText').textContent = 'Bond verification was inconclusive — testing one secured DFU command';
+    log('Bond verification was inconclusive after two attempts. The app will send the secured DFU command once, but will continue only on a positive write/response or a reboot followed by Secure DFU GATT verification.', 'warn');
   }
 
-  setState('connectionState', applicationDevice.name || 'Connected', 'good');
-  setState('modeState', 'Bond established', 'good');
-  el('progressText').textContent = 'Bluetooth bond established — sending the Buttonless DFU command';
-  log('Phase 2 of 2: Bluetooth pairing is complete. Sending the Buttonless DFU command on the reconnected application link.');
-  return postPairingInfo;
+  return {
+    postPairingInfo,
+    authorization,
+    authorizationVerified,
+  };
 }
 
 async function prepareAndEnterFullDfu(info, reason) {
@@ -762,21 +788,15 @@ async function prepareAndEnterFullDfu(info, reason) {
     firmware: preparedFirmware.applicationBin,
     applicationStart: preparedFirmware.applicationStart,
     fileName: selectedFileName,
+    entryConfidence: 'none',
   };
 
   info = await ensurePairingModeForFullDfu(info);
   await quiescePartialNotificationsBeforeDfu();
 
-  // Pair first. A successful pairing operation can display a tick and restart
-  // the old application. That disconnect is not a DFU handoff and must never
-  // enable the second chooser. Reconnect after pairing, then send the reboot
-  // command on the already bonded application link.
-  await establishBondBeforeFullDfu();
+  const bondResult = await establishBondBeforeFullDfu();
   await quiescePartialNotificationsBeforeDfu();
 
-  // Prepare the pending package only for phase 2, immediately before the actual
-  // Buttonless DFU command. This ensures that only the post-command disconnect
-  // can enable the DFU selector.
   pendingDfu = preparedPackage;
   dfuChooserReady = false;
   buttonlessDfuCommandAttempted = false;
@@ -784,42 +804,51 @@ async function prepareAndEnterFullDfu(info, reason) {
   applicationDeviceIdBeforeDfu = applicationDevice?.id || null;
   showDfuHandoffDialog();
   setState('connectionState', 'Sending DFU reboot command', 'busy');
-  setState('modeState', 'Waiting for DFU handoff', 'busy');
-  el('progressText').textContent = 'Bluetooth pairing is complete — sending the DFU reboot command';
+  setState('modeState', bondResult.authorizationVerified ? 'Bond verified' : 'Bond unverified', bondResult.authorizationVerified ? 'good' : 'warn');
+  el('progressText').textContent = 'Sending one secured Buttonless DFU command';
   updateButtons();
 
+  let outcome;
   try {
-    await enterButtonlessDfu(applicationDevice, {
+    outcome = await enterButtonlessDfu(applicationDevice, {
       log,
       skipAuthorization: true,
+      authorizationVerified: bondResult.authorizationVerified,
       onCommandAttempt: () => {
         buttonlessDfuCommandAttempted = true;
         disconnectPhase = DISCONNECT_PHASE.DFU_HANDOFF;
       },
     });
   } catch (error) {
-    // Some browser and operating-system Bluetooth stacks reject the secured
-    // write promise while the micro:bit still accepts it and disconnects. If the disconnect has already
-    // happened, continue with the prepared DFU handoff.
-    if (applicationDevice?.gatt?.connected) {
-      pendingDfu = null;
-      dfuChooserReady = false;
-      throw error;
-    }
-    log(`The DFU reboot write reported “${error.message}”, but the post-command disconnect was observed. Continuing to DFU selection.`, 'warn');
-    markDfuChooserReady();
+    pendingDfu = null;
+    dfuChooserReady = false;
+    const guidance = 'DFU mode was not observed. Reconnect the micro:bit and retry. If this repeats, remove the existing Bluetooth pairing on this phone or computer and pair again.';
+    log(guidance, 'warn');
+    throw new Error(`${error.message} ${guidance}`);
   } finally {
     disconnectPhase = DISCONNECT_PHASE.NONE;
   }
 
-  if (!applicationDevice?.gatt?.connected && buttonlessDfuCommandAttempted) {
+  const entryResult = classifyDfuEntry(outcome);
+  preparedPackage.entryConfidence = entryResult;
+
+  if (entryResult === 'confirmed') {
     markDfuChooserReady();
-    log('The application disconnected after the dedicated DFU reboot command. Open the blue DFU selector and wait for the rebooted identity to appear. The app confirms DFU only after finding control 0001 and packet 0002.', 'warn');
-  } else if (buttonlessDfuCommandAttempted) {
+    const evidence = outcome.commandAccepted
+      ? 'the micro:bit accepted the Buttonless DFU command'
+      : 'the secured Buttonless DFU write completed';
+    log(`DFU reboot command confirmed because ${evidence}. The app will now verify control 0001 and packet 0002 before transferring firmware.`);
+  } else if (entryResult === 'uncertain') {
+    markDfuChooserReady();
+    setState('modeState', 'DFU entry uncertain', 'warn');
+    el('progressText').textContent = 'The application disconnected after a failed write — checking once for Secure DFU';
+    log('The application disconnected, but neither the secured write nor the command response was confirmed. One automatic GATT check is allowed because some Bluetooth stacks reject the write promise after the device has already rebooted. If it still exposes 0004, automatic retry stops and the manual DfuTarg selector remains available.', 'warn');
+  } else {
     pendingDfu = null;
     dfuChooserReady = false;
-    throw new Error('The Buttonless DFU command completed without an application disconnect, so the DFU handoff was not confirmed');
+    throw new Error('The Buttonless DFU command was not accepted and no reboot disconnect was observed. Reconnect the micro:bit and retry Bluetooth pairing.');
   }
+
   updateButtons();
 }
 
@@ -962,10 +991,19 @@ async function selectDfuAndFlash() {
       unsupportedDfuCandidateIds.add(bootloaderDevice.id);
       log(`Marked browser id ${bootloaderDevice.id} as non-GATT-connectable for this DFU handoff. Selecting the same cached entry again will be rejected without another connection attempt.`, 'warn');
     }
+
     log(error.message, 'error');
-    el('progressText').textContent = `DFU stopped: ${error.message}`;
-    setState('methodState', 'DFU retry available', 'warn');
-    log('The prepared DFU package remains available. Reopen the selector and reselect the DFU device; the bootloader-reported offset and CRC will be used to resume safely. Cancel and enter DFU mode again only when the DFU device is no longer available.', 'warn');
+
+    if (error?.code === 'DFU_CANDIDATE_APPLICATION') {
+      el('progressText').textContent = 'The selected identity is still in application mode (0004), not Secure DFU';
+      setState('methodState', 'DFU entry not confirmed', 'warn');
+      setState('modeState', 'Application 0004 detected', 'warn');
+      log('The original Bluetooth identity returned to the application GATT table. Automatic selection will not run again. Select DfuTarg manually only when it is visibly present; otherwise cancel, reconnect, and repair the Bluetooth pairing on this host.', 'warn');
+    } else {
+      el('progressText').textContent = `DFU stopped: ${error.message}`;
+      setState('methodState', 'DFU retry available', 'warn');
+      log('The prepared DFU package remains available. Reopen the selector and reselect the DFU device; the bootloader-reported offset and CRC will be used to resume safely. Cancel and enter DFU mode again only when the DFU device is no longer available.', 'warn');
+    }
   } finally {
     disconnectPhase = DISCONNECT_PHASE.NONE;
     flashInProgress = false;
