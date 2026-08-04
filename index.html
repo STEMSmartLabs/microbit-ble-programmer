@@ -55,7 +55,7 @@
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">During a full flash, the app completes Bluetooth pairing and sends the DFU reboot command. It then automatically reconnects to the same permitted micro:bit identity, avoiding ambiguity when other DfuTarg devices are nearby. The manual DfuTarg selector appears only if automatic reconnect fails.</p>
+      <p class="chooser-help">During a full flash, the app completes Bluetooth pairing and sends the DFU reboot command. It makes one automatic same-device attempt. If that identity still exposes application DFU or cannot connect, automatic retry stops and the manual DfuTarg selector remains available.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.3.0</span>
+      <span id="buildLabel">Build 2.3.1</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU completes Bluetooth pairing first and then sends the Buttonless DFU reboot command. After the disconnect, the app first reuses the already permitted target micro:bit identity and verifies Secure DFU control 0001 and packet 0002. The manual DfuTarg selector appears only if this automatic handoff fails. If several DfuTarg devices are nearby, power off or move the others away before using the manual selector.</p>
+    <p>Full DFU completes Bluetooth pairing and then sends the Buttonless DFU reboot command. After the disconnect, the app makes one automatic attempt using the already permitted target identity and verifies Secure DFU control 0001 and packet 0002. If that attempt fails, it stops automatically and leaves the manual DfuTarg selector available. If several DfuTarg devices are nearby, power off or move the others away before using the manual selector.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -127,8 +127,6 @@
     </div>
   </dialog>
 
-
-
-  <script type="module" src="./auto-dfu-handoff.js?v=2.3.0"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.3.1"></script>
 </body>
 </html>
