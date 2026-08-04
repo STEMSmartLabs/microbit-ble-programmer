@@ -174,7 +174,7 @@ export function requestDfuDevice(bluetooth = navigator.bluetooth) {
  */
 export async function authorizeBondedButtonlessDfu(device, {
   log = () => {},
-  timeoutMs = 18000,
+  timeoutMs = 8000,
 } = {}) {
   if (!device) throw new Error('No application device selected');
   const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
@@ -188,12 +188,24 @@ export async function authorizeBondedButtonlessDfu(device, {
   const bonded = buttonUuid === DFU_BUTTONLESS_BONDED_UUID;
   if (!bonded) {
     log('The application exposes non-bonded Buttonless DFU; no separate Bluetooth pairing phase is required.');
-    return { bonded: false, disconnected: false, notificationsStarted: false };
+    return {
+      bonded: false,
+      verified: true,
+      disconnected: false,
+      notificationsStarted: false,
+      error: null,
+    };
   }
 
   if (!button.properties.notify && !button.properties.indicate) {
-    log('The bonded Buttonless DFU characteristic has no notification/indication property. Continuing with the existing Bluetooth security state.', 'warn');
-    return { bonded: true, disconnected: false, notificationsStarted: false };
+    log('The bonded Buttonless DFU characteristic cannot prove authorization because it exposes no indication or notification property.', 'warn');
+    return {
+      bonded: true,
+      verified: false,
+      disconnected: false,
+      notificationsStarted: false,
+      error: new Error('Bonded DFU authorization cannot be verified on this characteristic'),
+    };
   }
 
   let disconnectHandler;
@@ -210,37 +222,53 @@ export async function authorizeBondedButtonlessDfu(device, {
     log('Requesting Bluetooth pairing/authorization only. The DFU reboot command will not be sent during this phase.');
     try {
       await button.startNotifications();
-      log('Bluetooth authorization completed on the current connection. Waiting briefly in case pairing restarts the application…');
+      log('Bluetooth authorization verified on the current host. Waiting briefly in case pairing restarts the application…');
       const restartObserved = await Promise.race([
         disconnected.then(() => true),
         sleep(2500).then(() => false),
       ]);
       return {
         bonded: true,
+        verified: true,
         disconnected: restartObserved || !device.gatt.connected,
         notificationsStarted: !restartObserved && device.gatt.connected,
+        error: null,
       };
-    } catch (error) {
-      log(`The authorization request reported “${error.message}”. Waiting for the pairing confirmation/restart; no DFU reboot command will be sent yet.`, 'warn');
-    }
+    } catch (authorizationError) {
+      log(`The authorization request reported “${authorizationError.message}”. A disconnect alone will not be treated as proof that the bond succeeded.`, 'warn');
 
-    if (!device.gatt.connected || disconnectObserved) {
-      return { bonded: true, disconnected: true, notificationsStarted: false };
-    }
+      if (!device.gatt.connected || disconnectObserved) {
+        return {
+          bonded: true,
+          verified: false,
+          disconnected: true,
+          notificationsStarted: false,
+          error: authorizationError,
+        };
+      }
 
-    try {
-      await withTimeout(
-        disconnected,
-        timeoutMs,
-        'Timed out waiting for Bluetooth pairing to complete',
-      );
-      return { bonded: true, disconnected: true, notificationsStarted: false };
-    } catch (error) {
-      // Some stacks can complete an existing bond without restarting the
-      // application even though startNotifications reports an implementation
-      // error. Let phase 2 test the secured write on the current connection.
-      log(`${error.message}. No application restart was observed; continuing with the current connection and testing the bonded DFU write.`, 'warn');
-      return { bonded: true, disconnected: false, notificationsStarted: false };
+      try {
+        await withTimeout(
+          disconnected,
+          timeoutMs,
+          'Timed out waiting for a pairing restart after the authorization error',
+        );
+        return {
+          bonded: true,
+          verified: false,
+          disconnected: true,
+          notificationsStarted: false,
+          error: authorizationError,
+        };
+      } catch {
+        return {
+          bonded: true,
+          verified: false,
+          disconnected: false,
+          notificationsStarted: false,
+          error: authorizationError,
+        };
+      }
     }
   } finally {
     device.removeEventListener('gattserverdisconnected', disconnectHandler);
@@ -257,6 +285,7 @@ export async function enterButtonlessDfu(device, {
   timeoutMs = 15000,
   onCommandAttempt = null,
   skipAuthorization = false,
+  authorizationVerified = false,
 } = {}) {
   if (!device) throw new Error('No application device selected');
   const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
@@ -282,12 +311,46 @@ export async function enterButtonlessDfu(device, {
     throw new Error('Buttonless DFU characteristic is not writable');
   }
 
+  let verified = authorizationVerified || !bondedButtonless;
+
+  if (!skipAuthorization && bondedButtonless && (button.properties.notify || button.properties.indicate)) {
+    try {
+      log('Verifying bonded DFU authorization on the current connection…');
+      await button.startNotifications();
+      verified = true;
+      log('Bonded DFU authorization verified.');
+    } catch (error) {
+      verified = false;
+      if (!device.gatt.connected) {
+        const restartError = new Error('Bluetooth pairing restarted the application before the DFU command was sent');
+        restartError.code = 'DFU_AUTHORIZATION_RESTART';
+        restartError.cause = error;
+        throw restartError;
+      }
+      log(`Bonded DFU authorization could not be verified: ${error.message}.`, 'warn');
+    }
+  } else if (skipAuthorization && verified) {
+    log('Using the Bluetooth bond verified during the separate authorization phase.');
+  } else if (skipAuthorization) {
+    log('Bluetooth bond verification was inconclusive. Testing the secured DFU command once; a disconnect alone will remain an uncertain outcome.', 'warn');
+  }
+
   let settled = false;
   let disconnectObserved = false;
+  let commandAccepted = false;
+  let writeSucceeded = false;
   let timer;
   let responseHandler;
   let disconnectHandler;
   let lastWriteError = null;
+
+  const currentOutcome = () => ({
+    authorizationVerified: verified,
+    commandAccepted,
+    writeSucceeded,
+    disconnected: disconnectObserved,
+    writeError: lastWriteError,
+  });
 
   const completion = new Promise((resolve, reject) => {
     const finish = (error = null) => {
@@ -296,18 +359,21 @@ export async function enterButtonlessDfu(device, {
       clearTimeout(timer);
       button.removeEventListener('characteristicvaluechanged', responseHandler);
       device.removeEventListener('gattserverdisconnected', disconnectHandler);
-      if (error) reject(error);
-      else resolve();
+      const outcome = currentOutcome();
+      if (error) {
+        error.outcome = outcome;
+        reject(error);
+      } else {
+        resolve(outcome);
+      }
     };
 
     responseHandler = event => {
       const data = asBytes(event.target.value);
-      // Buttonless response: 0x20, request opcode 0x01, result.
       if (data.length >= 3 && data[0] === 0x20 && data[1] === 0x01) {
         if (data[2] === RESULT.SUCCESS) {
+          commandAccepted = true;
           log('Buttonless DFU command accepted. Waiting for reboot…');
-          // The disconnect normally follows immediately. Resolve after a short
-          // grace period even if the browser misses the disconnect event.
           setTimeout(() => finish(), 1500);
         } else {
           finish(new Error(`Buttonless DFU rejected: ${RESULT_TEXT[data[2]] || `result 0x${data[2].toString(16)}`}`));
@@ -317,31 +383,21 @@ export async function enterButtonlessDfu(device, {
 
     disconnectHandler = () => {
       disconnectObserved = true;
-      log('Application connection closed. Secure DFU mode will be confirmed only after control 0001 and packet 0002 are discovered.');
-      finish();
+      log('Application connection closed after the DFU command attempt. The command outcome will be classified before DFU selection is enabled.');
+      // Let a pending write promise settle so the returned outcome records
+      // whether the secured write itself succeeded or failed.
+      setTimeout(() => finish(), 250);
     };
 
     button.addEventListener('characteristicvaluechanged', responseHandler);
     device.addEventListener('gattserverdisconnected', disconnectHandler);
     timer = setTimeout(() => {
       const detail = lastWriteError ? ` Last GATT error: ${lastWriteError.message}.` : '';
-      finish(new Error(`Timed out waiting for the micro:bit to enter DFU mode.${detail}`));
+      const error = new Error(`Timed out waiting for the micro:bit to enter DFU mode.${detail}`);
+      error.code = 'DFU_ENTRY_TIMEOUT';
+      finish(error);
     }, timeoutMs);
   });
-
-  // Pairing/authorization can be completed in a separate first phase. When
-  // skipAuthorization is true, do not touch the secured CCCD again; send the
-  // reboot command on the already bonded, reconnected application link.
-  if (!skipAuthorization && (button.properties.notify || button.properties.indicate)) {
-    try {
-      log('Requesting bonded DFU authorization from the Bluetooth stack…');
-      await button.startNotifications();
-    } catch (error) {
-      log(`Buttonless notification subscription was not available: ${error.message}.`, 'warn');
-    }
-  } else if (skipAuthorization) {
-    log('Using the established Bluetooth bond; skipping another notification-subscription request before the DFU reboot command.');
-  }
 
   onCommandAttempt?.();
   log('Sending buttonless DFU command once…');
@@ -353,16 +409,11 @@ export async function enterButtonlessDfu(device, {
     } else {
       await writeWithoutResponse(button, command);
     }
+    writeSucceeded = true;
+    log('The secured Buttonless DFU write completed. Waiting for the command response or reboot…');
   } catch (error) {
     lastWriteError = error;
-    // A browser or operating-system Bluetooth stack may reject the write promise
-    // while the micro:bit has already accepted the command. Do not retry: a retry can overlap authorization or
-    // race the reboot. Wait for the definitive application disconnect instead.
-    log(`The browser reported a secured-write error (${error.message}). Waiting for the reboot disconnect; no retry will be sent.`, 'warn');
-  }
-
-  if (!device.gatt.connected || disconnectObserved) {
-    return completion;
+    log(`The browser reported a secured-write error (${error.message}). Waiting only for a possible reboot disconnect; no retry will be sent.`, 'warn');
   }
 
   return completion;
@@ -475,7 +526,9 @@ export class NordicSecureDfu {
     if (!discovered?.control || !discovered?.packet) {
       const visible = discovered?.characteristics?.map(characteristicUuid).join(', ') || 'none';
       if (discovered?.buttonless) {
-        throw new Error(`Selected entry is still exposing application Buttonless DFU instead of the Secure DFU bootloader. Visible 0xFE59 characteristics: ${visible}`);
+        const error = new Error(`Selected entry is still exposing application Buttonless DFU instead of the Secure DFU bootloader. Visible 0xFE59 characteristics: ${visible}`);
+        error.code = 'DFU_CANDIDATE_APPLICATION';
+        throw error;
       }
       throw new Error(`Selected entry does not expose Secure DFU control 0001 and packet 0002. Visible 0xFE59 characteristics: ${visible}`);
     }

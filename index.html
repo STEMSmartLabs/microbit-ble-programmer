@@ -55,7 +55,7 @@
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">During a full flash, the app completes Bluetooth pairing and sends the DFU reboot command. It makes one automatic same-device attempt. If that identity still exposes application DFU or cannot connect, automatic retry stops and the manual DfuTarg selector remains available.</p>
+      <p class="chooser-help">During a full flash, the app verifies bonded access on this phone or computer, classifies the DFU command outcome, and makes one automatic Secure DFU check. A failed write without a reboot does not open a misleading DfuTarg selector.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.3.1</span>
+      <span id="buildLabel">Build 2.4.0</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU completes Bluetooth pairing and then sends the Buttonless DFU reboot command. After the disconnect, the app makes one automatic attempt using the already permitted target identity and verifies Secure DFU control 0001 and packet 0002. If that attempt fails, it stops automatically and leaves the manual DfuTarg selector available. If several DfuTarg devices are nearby, power off or move the others away before using the manual selector.</p>
+    <p>Full DFU verifies bonded access on the current host and sends the Buttonless DFU command once. A positive command response or successful secured write is treated as confirmed. A failed write followed by a disconnect is treated as uncertain and checked once through GATT. A failed write without a reboot stops and asks you to reconnect or repair pairing. If several DfuTarg devices are nearby, power off or move the others away before using the manual selector.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -127,6 +127,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.3.1"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.0"></script>
 </body>
 </html>

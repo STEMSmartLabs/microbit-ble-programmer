@@ -1,11 +1,11 @@
 {
   "name": "stem-smart-labs-microbit-ble-programmer",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check app.js && node --check auto-dfu-handoff.js && node --check handoff-state.js && node --check core.js && node --check dfu.js",
+    "check": "node --check app.js && node --check auto-dfu-handoff.js && node --check handoff-state.js && node --check dfu-entry-state.js && node --check core.js && node --check dfu.js",
     "serve": "python3 -m http.server 8000"
   }
 }
