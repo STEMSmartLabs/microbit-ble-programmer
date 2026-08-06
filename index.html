@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#882c84">
-  <meta name="description" content="Program a BBC micro:bit V2 MakeCode HEX over Bluetooth using partial flashing or full application DFU.">
+  <meta name="description" content="Program a BBC micro:bit V2 from a MakeCode HEX file over Bluetooth.">
   <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
   <link rel="icon" type="image/png" href="assets/stem-smart-labs-logo.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2.6.0">
 </head>
 <body>
   <div class="background-orb orb-one"></div>
@@ -19,114 +19,93 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2</small></h1>
-        <p>Fast partial flashing when compatible, full application Secure DFU when the runtime differs.</p>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.6.0</small></h1>
+        <p>Choose a MakeCode file, connect your micro:bit and select Program.</p>
       </div>
     </header>
 
-    <div class="notice">
-      Full DFU replaces the micro:bit V2 application runtime and user program together while preserving the SoftDevice and bootloader.
-    </div>
-
     <section class="file-panel" aria-labelledby="fileHeading">
       <div class="section-heading">
-        <div><span class="step">1</span><h2 id="fileHeading">Choose a micro:bit V2 HEX</h2></div>
+        <div><span class="step">1</span><h2 id="fileHeading">Choose your MakeCode file</h2></div>
         <strong id="fileState" data-state="neutral">Not selected</strong>
       </div>
       <label class="drop-zone" id="dropZone" for="hexFile">
         <input id="hexFile" type="file" accept=".hex,text/plain">
         <span class="upload-icon" aria-hidden="true">⇧</span>
-        <strong>Select or drop a .hex file here</strong>
+        <strong>Select or drop a .hex file</strong>
+        <span>Use the file downloaded from MakeCode.</span>
       </label>
       <div class="file-result">
         <strong id="fileName">No file selected</strong>
-        <span id="fileDetails"></span>
+        <span id="fileDetails">Choose a file to begin.</span>
       </div>
     </section>
 
-    <section class="control-panel" aria-labelledby="connectHeading">
+    <section class="control-panel" aria-labelledby="programHeading">
       <div class="section-heading">
-        <div><span class="step">2</span><h2 id="connectHeading">Connect and program</h2></div>
+        <div><span class="step">2</span><h2 id="programHeading">Connect and program</h2></div>
       </div>
+
       <div class="actions">
-        <button id="connect" class="primary">Connect micro:bit</button>
-        <button id="program" class="accent" disabled>Program over Bluetooth</button>
-        <button id="selectDfu" class="dfu" hidden>Select DfuTarg manually</button>
-        <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
+        <button id="connect" class="primary">Connect</button>
+        <button id="program" class="accent" disabled>Program</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">During a full flash, the app verifies bonded access on this phone or computer, classifies the DFU command outcome, and makes one automatic Secure DFU check. A failed write without a reboot does not open a misleading DfuTarg selector.</p>
 
-      <div class="state-grid">
-        <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
-        <div><span>micro:bit mode</span><strong id="modeState" data-state="neutral">Unknown</strong></div>
-        <div><span>Services</span><strong id="serviceState" data-state="neutral">Not checked</strong></div>
-        <div><span>Runtime</span><strong id="runtimeState" data-state="neutral">Not checked</strong></div>
-        <div><span>Method</span><strong id="methodState" data-state="neutral">Not selected</strong></div>
+      <div class="state-grid" aria-live="polite">
+        <div>
+          <span>Connection</span>
+          <strong id="connectionState" data-state="neutral">Not connected</strong>
+        </div>
+        <div>
+          <span>Program</span>
+          <strong id="programState" data-state="neutral">Waiting</strong>
+        </div>
       </div>
     </section>
 
     <section class="progress-panel" aria-live="polite">
       <div class="progress-row">
         <strong id="progressPercent">0%</strong>
-        <span id="progressText">Waiting for a HEX file and micro:bit connection</span>
+        <span id="progressText">Choose a file and connect your micro:bit.</span>
       </div>
       <progress id="progress" max="100" value="0"></progress>
       <div class="progress-meta">
         <span id="bytesText">0 B / 0 B</span>
-        <span id="timeText">Elapsed 00:00 · ETA --:--</span>
+        <span id="timeText">Ready</span>
       </div>
     </section>
 
-    <section class="log-panel" aria-labelledby="logHeading">
-      <div class="log-heading">
-        <h2 id="logHeading">Activity and diagnostics</h2>
-        <div>
-          <button id="copyLog" class="text-button">Copy log</button>
+    <details class="log-panel" id="logDetails">
+      <summary>
+        <span>Activity details</span>
+        <span class="summary-hint">Tap to expand</span>
+      </summary>
+      <div class="log-content">
+        <div class="log-actions">
+          <button id="copyLog" class="text-button">Copy</button>
           <button id="clearLog" class="text-button">Clear</button>
         </div>
+        <pre id="status">Ready.</pre>
       </div>
-      <pre id="status">Ready.</pre>
-    </section>
+    </details>
 
     <details class="help-panel">
       <summary>Compatibility and safety notes</summary>
       <ul>
-        <li>When the installed runtime hash and MakeCode program layout match, the app uses the fast Partial Programming Service.</li>
-        <li>When the runtime or layout differs, the app extracts the V2 application region and uses Nordic Secure DFU to replace the runtime and program together.</li>
-        <li>Full application DFU does not intentionally replace the SoftDevice, bootloader or interface-chip firmware.</li>
-        <li>The currently installed application must expose Buttonless DFU. The new HEX should also retain Bluetooth/DFU support for future wireless updates.</li>
-        <li>Keep the micro:bit powered and the browser tab open until completion. USB recovery may be required after an interrupted full DFU.</li>
+        <li>Bluetooth programming works when the selected MakeCode file matches the software already on the micro:bit.</li>
+        <li>When the app recommends USB, connect the micro:bit with a USB cable and copy the downloaded file to the MICROBIT drive.</li>
+        <li>Keep the micro:bit powered and keep this page open until programming is complete.</li>
+        <li>Use a browser and device that support Web Bluetooth.</li>
       </ul>
     </details>
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.0</span>
+      <span id="buildLabel">Build 2.6.0</span>
     </footer>
   </main>
 
-  <dialog id="fullDfuWarningDialog" class="warning-dialog">
-    <div class="warning-mark">!</div>
-    <h2>Full application flash required</h2>
-    <p id="fullDfuReason"></p>
-    <div class="hash-grid">
-      <span>HEX runtime</span><code id="warningHexHash"></code>
-      <span>Device runtime</span><code id="warningDeviceHash"></code>
-      <span>Application image</span><code id="fullDfuSize"></code>
-    </div>
-    <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU verifies bonded access on the current host and sends the Buttonless DFU command once. A positive command response or successful secured write is treated as confirmed. A failed write followed by a disconnect is treated as uncertain and checked once through GATT. A failed write without a reboot stops and asks you to reconnect or repair pairing. If several DfuTarg devices are nearby, power off or move the others away before using the manual selector.</p>
-    <label class="acknowledge">
-      <input type="checkbox" id="fullDfuAcknowledge">
-      <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
-    </label>
-    <div class="dialog-actions">
-      <button id="cancelFullDfu" class="secondary">Cancel</button>
-      <button id="confirmFullDfu" class="danger" disabled>Enter DFU mode</button>
-    </div>
-  </dialog>
-
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.0"></script>
+  <script type="module" src="./app.js?v=2.6.0"></script>
 </body>
 </html>

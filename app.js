@@ -1,53 +1,31 @@
 import {
-  DEFAULT_V2_FLASH_USABLE_END,
-  V2_APPLICATION_START,
   V2_FLASH_END,
-  createMicrobitV2InitPacket,
   formatBytes,
-  formatHexAddress,
   prepareFirmware,
   selectMarkerCandidate,
   toHex,
 } from './core.js';
-import {
-  DFU_SERVICE_UUID,
-  NordicSecureDfu,
-  authorizeBondedButtonlessDfu,
-  discoverDfuService,
-  enterButtonlessDfu,
-  requestDfuDevice,
-} from './dfu.js?v=2.4.0';
-import { classifyDfuEntry } from './dfu-entry-state.js?v=2.4.0';
+import { classifyBluetoothCompatibility } from './compatibility.js?v=2.6.0';
 
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.6.0';
 const PARTIAL_SERVICE_UUID = 'e97dd91d-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_CHARACTERISTIC_UUID = 'e97d3b10-251d-470a-a062-fa1922dfa9a8';
 const PARTIAL_BLOCK_SIZE = 64;
 const PARTIAL_PACKETS_PER_BLOCK = 4;
 const PARTIAL_PACKET_DATA_SIZE = 16;
+const REMEMBERED_DEVICE_KEY = 'stem.microbit.bluetoothDeviceId';
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const el = id => document.getElementById(id);
 
-let applicationDevice = null;
-let partialCharacteristic = null;
-let buttonlessAvailable = false;
+let microbit = null;
+let characteristic = null;
 let preparedFirmware = null;
 let selectedFileName = '';
-let flashInProgress = false;
-const DISCONNECT_PHASE = Object.freeze({
-  NONE: 'none',
-  MODE_SWITCH: 'mode-switch',
-  BOND_AUTHORIZATION: 'bond-authorization',
-  DFU_HANDOFF: 'dfu-handoff',
-  DFU_TRANSFER: 'dfu-transfer',
-});
-let disconnectPhase = DISCONNECT_PHASE.NONE;
-let buttonlessDfuCommandAttempted = false;
-let pendingDfu = null;
-let dfuChooserReady = false;
-let applicationDeviceIdBeforeDfu = null;
-const unsupportedDfuCandidateIds = new Set();
+let currentInfo = null;
+let busy = false;
+let reconnecting = false;
+let expectedRestart = false;
 let wakeLock = null;
 let notificationQueue = [];
 let notificationWaiters = [];
@@ -57,21 +35,33 @@ function log(message, level = 'info') {
   const stamp = new Date().toLocaleTimeString([], {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
-  const prefix = level === 'error' ? 'ERROR: ' : level === 'warn' ? 'WARNING: ' : '';
+  const prefix = level === 'error' ? 'ERROR: ' : level === 'warn' ? 'NOTICE: ' : '';
   const status = el('status');
   status.textContent += `\n[${stamp}] ${prefix}${message}`;
   status.scrollTop = status.scrollHeight;
 }
 
-function setState(id, text, state = '') {
+function setState(id, text, state = 'neutral') {
   const target = el(id);
   if (!target) return;
   target.textContent = text;
   target.dataset.state = state;
 }
 
+function setProgressMessage(text) {
+  el('progressText').textContent = text;
+}
+
+function setUsbRecommended(message = 'This program cannot be sent by Bluetooth. Use USB instead.') {
+  currentInfo = null;
+  setState('programState', 'Use USB', 'warn');
+  setProgressMessage(message);
+  el('timeText').textContent = 'USB recommended';
+  updateButtons();
+}
+
 function readU32BE(bytes, offset) {
-  if (bytes.length < offset + 4) throw new Error('Short response from micro:bit');
+  if (bytes.length < offset + 4) throw new Error('The micro:bit response was incomplete');
   return (((bytes[offset] << 24) >>> 0)
     | (bytes[offset + 1] << 16)
     | (bytes[offset + 2] << 8)
@@ -86,12 +76,12 @@ function formatDuration(seconds) {
   return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
-function clearNotificationState(error = new Error('Bluetooth disconnected')) {
+function clearNotificationState(error = new Error('Bluetooth connection closed')) {
   for (const waiter of notificationWaiters.splice(0)) waiter.reject(error);
   notificationQueue = [];
 }
 
-function handlePartialNotification(event) {
+function handleNotification(event) {
   const view = event.target.value;
   const data = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
   const waiterIndex = notificationWaiters.findIndex(waiter => waiter.predicate(data));
@@ -134,7 +124,7 @@ function createNotificationWaiter(predicate, timeoutMs = 5000) {
     timer = setTimeout(() => {
       const index = notificationWaiters.indexOf(waiter);
       if (index >= 0) notificationWaiters.splice(index, 1);
-      waiter.reject(new Error('Timed out waiting for micro:bit response'));
+      waiter.reject(new Error('The micro:bit did not respond in time'));
     }, timeoutMs);
   });
 
@@ -149,13 +139,13 @@ function createNotificationWaiter(predicate, timeoutMs = 5000) {
   };
 }
 
-async function writePartialPacket(bytes) {
-  if (!partialCharacteristic) throw new Error('Partial Programming Service is not connected');
+async function writePacket(bytes) {
+  if (!characteristic) throw new Error('The micro:bit is not ready');
   const packet = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-  if (typeof partialCharacteristic.writeValueWithoutResponse === 'function') {
-    await partialCharacteristic.writeValueWithoutResponse(packet);
+  if (typeof characteristic.writeValueWithoutResponse === 'function') {
+    await characteristic.writeValueWithoutResponse(packet);
   } else {
-    await partialCharacteristic.writeValue(packet);
+    await characteristic.writeValue(packet);
   }
 }
 
@@ -163,11 +153,11 @@ function discardQueuedNotifications(predicate) {
   notificationQueue = notificationQueue.filter(data => !predicate(data));
 }
 
-async function partialCommand(bytes, predicate, timeoutMs = 5000) {
+async function sendCommand(bytes, predicate, timeoutMs = 5000) {
   discardQueuedNotifications(predicate);
   const waiter = createNotificationWaiter(predicate, timeoutMs);
   try {
-    await writePartialPacket(bytes);
+    await writePacket(bytes);
     return await waiter.promise;
   } catch (error) {
     waiter.cancel(error);
@@ -175,141 +165,107 @@ async function partialCommand(bytes, predicate, timeoutMs = 5000) {
   }
 }
 
-async function attachApplicationServices() {
-  if (!applicationDevice) throw new Error('No Bluetooth device selected');
-  const server = applicationDevice.gatt.connected
-    ? applicationDevice.gatt
-    : await applicationDevice.gatt.connect();
+async function attachProgrammingService() {
+  if (!microbit) throw new Error('No micro:bit selected');
+  const server = microbit.gatt.connected ? microbit.gatt : await microbit.gatt.connect();
 
-  partialCharacteristic = null;
-  buttonlessAvailable = false;
-  clearNotificationState(new Error('Refreshing Bluetooth services'));
+  characteristic = null;
+  clearNotificationState(new Error('Refreshing connection'));
 
   try {
-    const partialService = await server.getPrimaryService(PARTIAL_SERVICE_UUID);
-    partialCharacteristic = await partialService.getCharacteristic(PARTIAL_CHARACTERISTIC_UUID);
-    partialCharacteristic.removeEventListener('characteristicvaluechanged', handlePartialNotification);
-    partialCharacteristic.addEventListener('characteristicvaluechanged', handlePartialNotification);
-    await partialCharacteristic.startNotifications();
-  } catch {
-    partialCharacteristic = null;
+    const service = await server.getPrimaryService(PARTIAL_SERVICE_UUID);
+    characteristic = await service.getCharacteristic(PARTIAL_CHARACTERISTIC_UUID);
+    characteristic.removeEventListener('characteristicvaluechanged', handleNotification);
+    characteristic.addEventListener('characteristicvaluechanged', handleNotification);
+    await characteristic.startNotifications();
+  } catch (error) {
+    characteristic = null;
+    throw new Error('Bluetooth programming is not available on this micro:bit');
+  }
+}
+
+function rememberDevice(device) {
+  try { localStorage.setItem(REMEMBERED_DEVICE_KEY, device.id); } catch {}
+}
+
+function forgetRememberedDeviceId() {
+  try { localStorage.removeItem(REMEMBERED_DEVICE_KEY); } catch {}
+}
+
+async function getRememberedDevice() {
+  if (typeof navigator.bluetooth?.getDevices !== 'function') return null;
+  const devices = await navigator.bluetooth.getDevices();
+  let savedId = null;
+  try { savedId = localStorage.getItem(REMEMBERED_DEVICE_KEY); } catch {}
+
+  if (savedId) {
+    const saved = devices.find(device => device.id === savedId);
+    if (saved) return saved;
   }
 
-  const dfu = await discoverDfuService(server);
-  buttonlessAvailable = Boolean(dfu?.buttonless);
+  return devices.find(device => (device.name || '').startsWith('BBC micro:bit')) || null;
+}
 
-  if (!partialCharacteristic && !buttonlessAvailable) {
-    throw new Error('Neither the Partial Programming Service nor Buttonless DFU is available in this micro:bit program');
-  }
+async function chooseDevice() {
+  const remembered = await getRememberedDevice();
+  if (remembered) return { device: remembered, reused: true };
 
-  if (partialCharacteristic && buttonlessAvailable) {
-    setState('serviceState', 'Partial + Full DFU', 'good');
-  } else if (partialCharacteristic) {
-    setState('serviceState', 'Partial only', 'warn');
+  const device = await navigator.bluetooth.requestDevice({
+    filters: [{ namePrefix: 'BBC micro:bit' }],
+    optionalServices: [PARTIAL_SERVICE_UUID],
+  });
+  return { device, reused: false };
+}
+
+function handleDisconnected() {
+  characteristic = null;
+  clearNotificationState();
+
+  if (reconnecting) {
+    setState('connectionState', 'Reconnecting…', 'busy');
+    log('The micro:bit is restarting for programming.');
+  } else if (expectedRestart) {
+    expectedRestart = false;
+    setState('connectionState', 'Restarting', 'busy');
+    setState('programState', 'Complete', 'good');
+    setProgressMessage('Programming complete. The micro:bit is restarting.');
+    log('Programming completed successfully.');
   } else {
-    setState('serviceState', 'Full DFU only', 'good');
+    setState('connectionState', 'Not connected', 'neutral');
+    setState('programState', preparedFirmware ? 'Connect to check' : 'Waiting', 'neutral');
+    setProgressMessage(preparedFirmware
+      ? 'Connect the micro:bit to check this file.'
+      : 'Choose a file and connect your micro:bit.');
+    log('Disconnected.');
   }
+
+  currentInfo = null;
+  updateButtons();
 }
 
 function updateButtons() {
-  const connected = Boolean(applicationDevice?.gatt?.connected && (partialCharacteristic || buttonlessAvailable));
-  el('connect').disabled = flashInProgress;
-  el('program').disabled = flashInProgress || Boolean(pendingDfu) || !connected || !preparedFirmware;
-  el('disconnect').disabled = flashInProgress || !applicationDevice?.gatt?.connected;
-  el('hexFile').disabled = flashInProgress;
-  el('selectDfu').hidden = !pendingDfu;
-  el('selectDfu').disabled = flashInProgress || !pendingDfu || !dfuChooserReady;
-  el('cancelDfu').hidden = !pendingDfu;
-  el('cancelDfu').disabled = flashInProgress || !pendingDfu;
-
+  const connected = Boolean(microbit?.gatt?.connected && characteristic);
+  el('connect').disabled = busy || connected;
+  el('program').disabled = busy || !connected || !currentInfo?.supported;
+  el('disconnect').disabled = busy || !microbit?.gatt?.connected;
+  el('hexFile').disabled = busy;
 }
 
-function showDfuHandoffDialog() {
-  // Intentionally no modal dialog here. A page-level modal can overlap a
-  // browser or operating-system Bluetooth authorization prompt and cause one
-  // of the two interfaces to close. The inline DFU button is enabled only after
-  // the application-mode micro:bit has actually disconnected.
-}
-
-function markDfuChooserReady() {
-  if (!pendingDfu) return;
-  dfuChooserReady = true;
-  setState('connectionState', 'Waiting for DFU device', 'busy');
-  setState('modeState', 'DFU not confirmed', 'busy');
-  el('progressText').textContent = 'Open the DFU selector and wait for the rebooted micro:bit identity to appear';
-  updateButtons();
-  // Web Bluetooth requires a fresh user gesture for the second chooser.
-  // Focusing the inline button removes avoidable delay without opening another
-  // page interface while Bluetooth authorization may still be active.
-  queueMicrotask(() => {
-    const button = el('selectDfu');
-    button?.focus({ preventScroll: false });
-  });
-}
-
-function handleApplicationDisconnected() {
-  const phase = disconnectPhase;
-  partialCharacteristic = null;
-  buttonlessAvailable = false;
-  clearNotificationState();
-
-  if (phase === DISCONNECT_PHASE.MODE_SWITCH) {
-    setState('connectionState', 'Reconnecting in programming mode', 'busy');
-    setState('modeState', 'Mode switch in progress', 'busy');
-    log('Application disconnected while switching to pairing/programming mode. The DFU selector remains disabled.');
-  } else if (phase === DISCONNECT_PHASE.BOND_AUTHORIZATION) {
-    setState('connectionState', 'Pairing restart observed', 'busy');
-    setState('modeState', 'Authorization verification pending', 'busy');
-    log('Application disconnected during Bluetooth pairing/authorization. This is not proof that the bond succeeded; the app will reconnect and verify secured access before sending the DFU command.');
-  } else if (
-    phase === DISCONNECT_PHASE.DFU_HANDOFF
-    && buttonlessDfuCommandAttempted
-    && pendingDfu
-  ) {
-    log('Application disconnected after the Buttonless DFU command attempt. Disconnect alone does not enable DFU selection; waiting for the secured-write/response outcome.');
-  } else if (phase === DISCONNECT_PHASE.DFU_TRANSFER) {
-    log('Secure DFU bootloader connection closed after transfer completion or transport cleanup.');
-  } else {
-    setState('connectionState', 'Disconnected', 'neutral');
-    setState('modeState', 'Unknown', 'neutral');
-    setState('serviceState', 'Not checked', 'neutral');
-    log(pendingDfu
-      ? 'Application disconnected while a DFU package is pending.'
-      : 'Disconnected.');
+function validateDeviceProgramRegion(region) {
+  if (region.start < 0 || region.start >= V2_FLASH_END
+      || region.end <= region.start || region.end > V2_FLASH_END
+      || (region.start & 0x0f) !== 0) {
+    throw new Error('The micro:bit reported an unsupported program area');
   }
-  updateButtons();
-}
-
-async function connectApplication() {
-  if (!window.isSecureContext) throw new Error('Web Bluetooth requires HTTPS or localhost');
-  if (!navigator.bluetooth) throw new Error('Web Bluetooth is unavailable in this browser');
-
-  if (!applicationDevice) {
-    applicationDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'BBC micro:bit' }],
-      optionalServices: [PARTIAL_SERVICE_UUID, DFU_SERVICE_UUID],
-    });
-    applicationDevice.addEventListener('gattserverdisconnected', handleApplicationDisconnected);
-  }
-
-  setState('connectionState', 'Connecting…', 'busy');
-  await attachApplicationServices();
-  setState('connectionState', applicationDevice.name || 'Connected', 'good');
-  setState('modeState', 'Application', 'good');
-  setState('runtimeState', 'Not checked', 'neutral');
-  setState('methodState', 'Will be selected automatically', 'neutral');
-  log(`Connected: ${applicationDevice.name || 'BBC micro:bit'} [browser id ${applicationDevice.id}]`);
-  log(`Services: ${partialCharacteristic ? 'partial programming' : ''}${partialCharacteristic && buttonlessAvailable ? ' + ' : ''}${buttonlessAvailable ? 'buttonless full DFU' : ''}.`);
-  updateButtons();
 }
 
 async function readRegion(regionId) {
-  const response = await partialCommand(
+  const response = await sendCommand(
     [0x00, regionId],
     data => data[0] === 0x00 && data[1] === regionId,
     5000,
   );
-  if (response.length < 18) throw new Error(`Invalid region ${regionId} response: ${toHex(response)}`);
+  if (response.length < 18) throw new Error('The micro:bit response was incomplete');
   return {
     start: readU32BE(response, 2),
     end: readU32BE(response, 6),
@@ -317,153 +273,182 @@ async function readRegion(regionId) {
   };
 }
 
-function validateDeviceProgramRegion(makeCode) {
-  if (makeCode.start < 0 || makeCode.start >= V2_FLASH_END
-      || makeCode.end <= makeCode.start || makeCode.end > V2_FLASH_END) {
-    throw new Error(`Device reported an unsafe program region ${formatHexAddress(makeCode.start)}–${formatHexAddress(makeCode.end)}`);
-  }
-  if ((makeCode.start & 0x0f) !== 0) throw new Error('Device program region is not 16-byte aligned');
-}
+async function readProgrammingInfo() {
+  if (!characteristic || !preparedFirmware) return null;
+  const status = await sendCommand([0xee], data => data[0] === 0xee, 5000);
+  if (status.length < 3) throw new Error('The micro:bit response was incomplete');
 
-function chooseMarkerForDevice(image, dal, makeCode) {
-  return image.markerCandidates.find(candidate => (
-    candidate.offset === makeCode.start && candidate.runtimeHash === dal.hash
-  )) || image.markerCandidates.find(candidate => candidate.offset === makeCode.start) || null;
-}
-
-async function readFlashInfo(image) {
-  if (!partialCharacteristic) return null;
-  const status = await partialCommand([0xee], data => data[0] === 0xee, 5000);
-  if (status.length < 3) throw new Error(`Invalid partial programming status: ${toHex(status)}`);
-
-  const version = status[1];
   const mode = status[2];
-  const modeName = mode === 0 ? 'pairing/programming' : mode === 1 ? 'application' : `unknown (${mode})`;
-  setState('modeState', modeName, mode <= 1 ? 'good' : 'warn');
-  log(`Partial Programming Service v${version}, mode ${modeName}`);
+  const deviceRuntime = await readRegion(0x01);
+  const deviceProgram = await readRegion(0x02);
+  validateDeviceProgramRegion(deviceProgram);
 
-  const dal = await readRegion(0x01);
-  const makeCode = await readRegion(0x02);
-  validateDeviceProgramRegion(makeCode);
+  const result = classifyBluetoothCompatibility({
+    markerCandidates: preparedFirmware.markerCandidates,
+    deviceRuntimeHash: deviceRuntime.hash,
+    deviceProgramStart: deviceProgram.start,
+  });
 
-  const candidate = chooseMarkerForDevice(image, dal, makeCode);
-  const selectedImage = selectMarkerCandidate(image, candidate);
-  const layoutMatches = Boolean(candidate && candidate.offset === makeCode.start);
-  const runtimeMatches = Boolean(candidate && candidate.runtimeHash === dal.hash);
-  const programMatches = Boolean(candidate && candidate.programHash === makeCode.hash);
-
-  setState('runtimeState', runtimeMatches ? 'Runtime match' : 'Runtime differs', runtimeMatches ? 'good' : 'warn');
-  log(`Device runtime hash:    ${dal.hash}`);
-  log(`Device program hash:    ${makeCode.hash}`);
-  log(`Device program region:  ${formatHexAddress(makeCode.start)}–${formatHexAddress(makeCode.end)} (${formatBytes(makeCode.end - makeCode.start)})`);
-  if (candidate) {
-    log(`Selected HEX runtime:   ${candidate.runtimeHash}`);
-    log(`Selected HEX program:   ${candidate.programHash}`);
-    log(`Selected HEX start:     ${formatHexAddress(candidate.offset)}`);
-  } else {
-    log('No HEX partial-flash marker matches the device program start.', 'warn');
+  if (!result.supported) {
+    return {
+      supported: false,
+      reason: result.reason,
+      mode,
+      deviceProgram,
+    };
   }
 
+  const image = selectMarkerCandidate(preparedFirmware, result.candidate);
   return {
-    version,
+    supported: true,
+    reason: 'ready',
     mode,
-    dal,
-    makeCode,
-    candidate,
-    image: selectedImage,
-    layoutMatches,
-    runtimeMatches,
-    programMatches,
+    deviceProgram,
+    image,
+    programMatches: result.candidate.programHash === deviceProgram.hash,
   };
 }
 
-function requestFullDfuApproval(info, firmware, reason) {
-  const dialog = el('fullDfuWarningDialog');
-  el('fullDfuReason').textContent = reason;
-  el('warningHexHash').textContent = info?.candidate?.runtimeHash || firmware.runtimeHash || 'Not available';
-  el('warningDeviceHash').textContent = info?.dal?.hash || 'Not available';
-  el('fullDfuSize').textContent = `${formatBytes(firmware.applicationBytes)} (${formatHexAddress(firmware.applicationStart)}–${formatHexAddress(firmware.applicationEnd)})`;
-  el('fullDfuAcknowledge').checked = false;
-  el('confirmFullDfu').disabled = true;
+async function checkCompatibility() {
+  currentInfo = null;
 
-  return new Promise(resolve => {
-    const finish = approved => {
-      dialog.close();
-      cleanup();
-      resolve(approved);
-    };
-    const onCheck = () => { el('confirmFullDfu').disabled = !el('fullDfuAcknowledge').checked; };
-    const onCancel = event => { event.preventDefault(); finish(false); };
-    const onCancelClick = () => finish(false);
-    const onConfirm = () => finish(true);
-    const cleanup = () => {
-      el('fullDfuAcknowledge').removeEventListener('change', onCheck);
-      el('cancelFullDfu').removeEventListener('click', onCancelClick);
-      el('confirmFullDfu').removeEventListener('click', onConfirm);
-      dialog.removeEventListener('cancel', onCancel);
-    };
+  if (!preparedFirmware) {
+    setState('programState', 'Choose a file', 'neutral');
+    updateButtons();
+    return;
+  }
 
-    el('fullDfuAcknowledge').addEventListener('change', onCheck);
-    el('cancelFullDfu').addEventListener('click', onCancelClick);
-    el('confirmFullDfu').addEventListener('click', onConfirm);
-    dialog.addEventListener('cancel', onCancel);
-    dialog.showModal();
-  });
+  if (!preparedFirmware.markerCandidates.length) {
+    setUsbRecommended();
+    log('This file requires USB programming.', 'warn');
+    return;
+  }
+
+  if (!microbit?.gatt?.connected || !characteristic) {
+    setState('programState', 'Connect to check', 'neutral');
+    setProgressMessage('Connect the micro:bit to check this file.');
+    updateButtons();
+    return;
+  }
+
+  setState('programState', 'Checking…', 'busy');
+  setProgressMessage('Checking whether this file can be sent by Bluetooth…');
+
+  try {
+    const info = await readProgrammingInfo();
+    if (!info?.supported) {
+      setUsbRecommended();
+      log('This file does not match the software on the micro:bit. Use USB.', 'warn');
+      return;
+    }
+
+    currentInfo = info;
+    setState('programState', info.programMatches ? 'Already installed' : 'Ready', 'good');
+    setProgressMessage(info.programMatches
+      ? 'This program is already on the micro:bit. Select Program to restart it.'
+      : 'Bluetooth programming is available. Select Program.');
+    el('timeText').textContent = 'Bluetooth available';
+    log('The file is ready for Bluetooth programming.');
+  } catch (error) {
+    console.error(error);
+    setUsbRecommended('Bluetooth programming could not be confirmed. Use USB instead.');
+    log('Bluetooth programming could not be confirmed. Use USB.', 'warn');
+  }
+
+  updateButtons();
 }
 
-async function reconnectAfterPartialModeSwitch() {
-  disconnectPhase = DISCONNECT_PHASE.MODE_SWITCH;
-  try {
-    if (applicationDevice?.gatt?.connected) applicationDevice.gatt.disconnect();
-    partialCharacteristic = null;
-    clearNotificationState(new Error('Switching micro:bit mode'));
+async function connect() {
+  if (!window.isSecureContext) {
+    setState('connectionState', 'HTTPS required', 'bad');
+    setProgressMessage('Open this page using HTTPS.');
+    return;
+  }
+  if (!navigator.bluetooth) {
+    setState('connectionState', 'Not supported', 'bad');
+    setProgressMessage('Bluetooth programming is not supported in this browser. Use USB.');
+    return;
+  }
 
+  busy = true;
+  currentInfo = null;
+  setState('connectionState', 'Connecting…', 'busy');
+  setState('programState', 'Waiting', 'neutral');
+  setProgressMessage('Connecting to your micro:bit…');
+  updateButtons();
+
+  let reused = false;
+  try {
+    if (!microbit) {
+      const selected = await chooseDevice();
+      microbit = selected.device;
+      reused = selected.reused;
+      microbit.removeEventListener('gattserverdisconnected', handleDisconnected);
+      microbit.addEventListener('gattserverdisconnected', handleDisconnected);
+    }
+
+    await attachProgrammingService();
+    rememberDevice(microbit);
+    setState('connectionState', microbit.name || 'Connected', 'good');
+    log(reused ? 'Reconnected to the saved micro:bit.' : 'Connected to the micro:bit.');
+    await checkCompatibility();
+  } catch (error) {
+    console.error(error);
+    characteristic = null;
+    currentInfo = null;
+
+    const cancelled = /cancel|chooser/i.test(error?.message || '');
+    if (cancelled) {
+      setState('connectionState', 'Not connected', 'neutral');
+      setProgressMessage('No micro:bit was selected.');
+      log('No micro:bit was selected.');
+    } else if (reused) {
+      forgetRememberedDeviceId();
+      microbit = null;
+      setState('connectionState', 'Try again', 'warn');
+      setProgressMessage('The saved connection could not be used. Select Connect again and choose your micro:bit.');
+      log('The saved connection could not be used. Select Connect again.');
+    } else {
+      setState('connectionState', 'Not available', 'warn');
+      setUsbRecommended('Bluetooth programming is not available on this micro:bit. Use USB instead.');
+      log('Bluetooth programming is not available on this micro:bit. Use USB.', 'warn');
+    }
+  } finally {
+    busy = false;
+    updateButtons();
+  }
+}
+
+async function reconnectForProgramming() {
+  reconnecting = true;
+  characteristic = null;
+  clearNotificationState(new Error('Restarting for programming'));
+
+  if (microbit?.gatt?.connected) {
+    try { microbit.gatt.disconnect(); } catch {}
+  }
+
+  let lastError = null;
+  try {
     for (let attempt = 1; attempt <= 20; attempt++) {
       try {
         await sleep(attempt === 1 ? 900 : 500);
-        await attachApplicationServices();
-        if (!partialCharacteristic) throw new Error('Partial Programming Service not found');
-        setState('connectionState', applicationDevice.name || 'Connected', 'good');
-        log(`Reconnected in programming mode (attempt ${attempt}).`);
+        await attachProgrammingService();
+        setState('connectionState', microbit.name || 'Connected', 'good');
+        log('Reconnected and ready to program.');
         return;
       } catch (error) {
-        if (attempt === 20) throw new Error(`Could not reconnect in programming mode: ${error.message}`);
+        lastError = error;
       }
     }
   } finally {
-    disconnectPhase = DISCONNECT_PHASE.NONE;
-  }
-}
-
-async function reconnectAfterBondAuthorization() {
-  partialCharacteristic = null;
-  buttonlessAvailable = false;
-  clearNotificationState(new Error('Reconnecting after Bluetooth pairing'));
-  setState('connectionState', 'Reconnecting after pairing…', 'busy');
-  setState('modeState', 'Pairing completed', 'busy');
-  el('progressText').textContent = 'Bluetooth pairing completed — reconnecting before the DFU command';
-
-  let lastError = null;
-  for (let attempt = 1; attempt <= 24; attempt++) {
-    try {
-      await sleep(attempt === 1 ? 1200 : 650);
-      await attachApplicationServices();
-      if (!buttonlessAvailable) throw new Error('Buttonless DFU characteristic not found after pairing');
-      setState('connectionState', applicationDevice.name || 'Connected', 'good');
-      log(`Reconnected to the micro:bit application after pairing (attempt ${attempt}).`);
-      return;
-    } catch (error) {
-      lastError = error;
-      if (applicationDevice?.gatt?.connected) {
-        try { applicationDevice.gatt.disconnect(); } catch {}
-      }
-    }
+    reconnecting = false;
   }
 
-  throw new Error(`Could not reconnect after Bluetooth pairing: ${lastError?.message || 'unknown Bluetooth error'}`);
+  throw new Error(lastError?.message || 'Could not reconnect to the micro:bit');
 }
 
-function makePartialDataPacket(image, offset, packetNumber, part) {
+function makeDataPacket(image, offset, packetNumber, part) {
   const packet = new Uint8Array(20);
   packet.fill(0xff, 4);
   packet[0] = 0x01;
@@ -482,106 +467,106 @@ function makePartialDataPacket(image, offset, packetNumber, part) {
   return packet;
 }
 
-async function sendPartialBlock(image, offset, packetNumber, chunkDelay) {
+async function sendBlock(image, offset, packetNumber, packetDelayMs) {
   discardQueuedNotifications(data => data[0] === 0x01);
   const waiter = createNotificationWaiter(data => data[0] === 0x01, 7000);
-  const ackPromise = waiter.promise;
+  const acknowledgement = waiter.promise;
 
   try {
     for (let part = 0; part < PARTIAL_PACKETS_PER_BLOCK; part++) {
-      if (chunkDelay) await sleep(chunkDelay);
-      await writePartialPacket(makePartialDataPacket(image, offset, packetNumber, part));
+      if (packetDelayMs) await sleep(packetDelayMs);
+      await writePacket(makeDataPacket(image, offset, packetNumber, part));
     }
 
     for (let probe = 0; probe < 8; probe++) {
       const race = await Promise.race([
-        ackPromise.then(value => ({ value })),
+        acknowledgement.then(value => ({ value })),
         sleep(650).then(() => ({ timeout: true })),
       ]);
       if (!race.timeout) return race.value;
-      if (waiter.isSettled()) return await ackPromise;
-      const bogus = new Uint8Array(20);
-      bogus[0] = 0x01;
-      bogus[3] = 0xff;
-      await writePartialPacket(bogus);
+      if (waiter.isSettled()) return await acknowledgement;
+      const probePacket = new Uint8Array(20);
+      probePacket[0] = 0x01;
+      probePacket[3] = 0xff;
+      await writePacket(probePacket);
     }
-    return await ackPromise;
+
+    return await acknowledgement;
   } catch (error) {
     waiter.cancel(error);
     throw error;
   }
 }
 
-function resetProgress(totalBytes = 0, text = 'Preparing…') {
+function resetProgress(totalBytes = 0, text = 'Ready') {
   el('progress').max = Math.max(1, totalBytes);
   el('progress').value = 0;
   el('progressPercent').textContent = '0%';
   el('progressText').textContent = text;
   el('bytesText').textContent = `0 B / ${formatBytes(totalBytes)}`;
-  el('timeText').textContent = 'Elapsed 00:00 · ETA --:--';
+  el('timeText').textContent = 'Ready';
   lastProgressLogPercent = -10;
 }
 
-function updateProgress(doneBytes, totalBytes, startTime, address, label = 'Writing', forceLog = false) {
+function updateProgress(doneBytes, totalBytes, startedAt, forceLog = false) {
   const percent = totalBytes ? Math.min(100, (doneBytes / totalBytes) * 100) : 0;
-  const elapsedSeconds = (performance.now() - startTime) / 1000;
+  const elapsedSeconds = (performance.now() - startedAt) / 1000;
   const bytesPerSecond = elapsedSeconds > 0 ? doneBytes / elapsedSeconds : 0;
   const etaSeconds = bytesPerSecond > 0 ? (totalBytes - doneBytes) / bytesPerSecond : Infinity;
 
   el('progress').max = Math.max(1, totalBytes);
   el('progress').value = Math.min(doneBytes, totalBytes);
   el('progressPercent').textContent = `${Math.floor(percent)}%`;
-  el('progressText').textContent = address === null ? label : `${label} ${formatHexAddress(address)}`;
+  el('progressText').textContent = 'Sending program…';
   el('bytesText').textContent = `${formatBytes(doneBytes)} / ${formatBytes(totalBytes)}`;
-  el('timeText').textContent = `Elapsed ${formatDuration(elapsedSeconds)} · ETA ${formatDuration(etaSeconds)}`;
+  el('timeText').textContent = `Elapsed ${formatDuration(elapsedSeconds)} · Remaining ${formatDuration(etaSeconds)}`;
 
   const wholePercent = Math.floor(percent);
   if (forceLog || wholePercent >= lastProgressLogPercent + 10) {
     lastProgressLogPercent = Math.floor(wholePercent / 10) * 10;
-    log(`${label}: ${wholePercent}% — ${formatBytes(doneBytes)} of ${formatBytes(totalBytes)}${address === null ? '' : ` — ${formatHexAddress(address)}`}`);
+    log(`Programming ${wholePercent}% complete.`);
   }
 }
 
-async function transferPartial(image, transferEnd) {
+async function transferProgram(image, transferEnd) {
   let offset = image.magicOffset;
   let packetNumber = 0;
-  let chunkDelay = 15;
+  let packetDelayMs = 15;
   let retriesForBlock = 0;
   const totalBytes = transferEnd - image.magicOffset;
   const startedAt = performance.now();
 
-  resetProgress(totalBytes, 'Starting partial Bluetooth transfer…');
-  updateProgress(0, totalBytes, startedAt, offset, 'Partial flash', true);
+  resetProgress(totalBytes, 'Starting programming…');
+  updateProgress(0, totalBytes, startedAt, true);
 
   while (offset < transferEnd) {
-    const ack = await sendPartialBlock(image, offset, packetNumber, chunkDelay);
-    if (ack.length < 2) throw new Error(`Short transfer response: ${toHex(ack)}`);
+    const acknowledgement = await sendBlock(image, offset, packetNumber, packetDelayMs);
+    if (acknowledgement.length < 2) throw new Error('The micro:bit response was incomplete');
 
-    if (ack[1] === 0xaa) {
+    if (acknowledgement[1] === 0xaa) {
       retriesForBlock++;
-      if (retriesForBlock > 12) throw new Error(`Packet resynchronisation repeatedly failed at ${formatHexAddress(offset)}`);
+      if (retriesForBlock > 12) throw new Error('The Bluetooth transfer could not continue');
       packetNumber = (packetNumber + 4) & 0xff;
-      chunkDelay = Math.min(chunkDelay + 10, 75);
-      log(`Packet out of order at ${formatHexAddress(offset)}; resync ${retriesForBlock}, delay ${chunkDelay} ms.`, 'warn');
+      packetDelayMs = Math.min(packetDelayMs + 10, 75);
       continue;
     }
 
-    if (ack[1] !== 0xff) throw new Error(`Packet transfer failed, response ${toHex(ack)}`);
+    if (acknowledgement[1] !== 0xff) throw new Error('The micro:bit did not accept the program data');
+
     offset += PARTIAL_BLOCK_SIZE;
     packetNumber = (packetNumber + 4) & 0xff;
     retriesForBlock = 0;
-    chunkDelay = Math.max(0, chunkDelay - 1);
-    updateProgress(offset - image.magicOffset, totalBytes, startedAt, Math.min(offset, transferEnd), 'Partial flash');
+    packetDelayMs = Math.max(0, packetDelayMs - 1);
+    updateProgress(offset - image.magicOffset, totalBytes, startedAt);
   }
-  updateProgress(totalBytes, totalBytes, startedAt, transferEnd, 'Partial flash', true);
+
+  updateProgress(totalBytes, totalBytes, startedAt, true);
 }
 
 async function acquireWakeLock() {
   try {
     if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-  } catch (error) {
-    log(`Screen wake lock unavailable: ${error.message}`, 'warn');
-  }
+  } catch {}
 }
 
 async function releaseWakeLock() {
@@ -589,424 +574,77 @@ async function releaseWakeLock() {
   wakeLock = null;
 }
 
-async function runPartialFlash(info) {
-  setState('methodState', 'Fast partial flash', 'good');
-  log('Runtime and program layout match. Using fast Partial Programming Service.');
-
-  if (info.mode === 1 && info.programMatches) {
-    await writePartialPacket([0xff, 0x01]);
-    el('progress').max = 100;
-    el('progress').value = 100;
-    el('progressPercent').textContent = '100%';
-    el('progressText').textContent = 'The selected program is already installed';
-    log('Program already installed; micro:bit restarted in application mode.');
-    return;
-  }
-
-  if (info.mode !== 0) {
-    try {
-      disconnectPhase = DISCONNECT_PHASE.MODE_SWITCH;
-      await writePartialPacket([0xff, 0x00]);
-      log('Switching micro:bit to pairing/programming mode…');
-      await reconnectAfterPartialModeSwitch();
-    } catch (error) {
-      disconnectPhase = DISCONNECT_PHASE.NONE;
-      throw error;
-    }
-    info = await readFlashInfo(preparedFirmware);
-    if (!info || info.mode !== 0) throw new Error('micro:bit did not enter pairing/programming mode');
-    if (!info.runtimeMatches || !info.layoutMatches) throw new Error('Runtime or program layout changed during reconnect');
-  }
-
-  const transferEnd = info.makeCode.end;
-  const transferBytes = transferEnd - info.image.magicOffset;
-  log(`Starting partial transfer of ${formatBytes(transferBytes)} from ${formatHexAddress(info.image.magicOffset)} to ${formatHexAddress(transferEnd)}.`);
-  await transferPartial(info.image, transferEnd);
-  log('Sending partial-flash end-of-transmission command…');
-  await writePartialPacket([0x02]);
-  el('progress').value = el('progress').max;
+function showComplete(totalBytes) {
+  el('progress').max = Math.max(1, totalBytes || 100);
+  el('progress').value = totalBytes || 100;
   el('progressPercent').textContent = '100%';
-  el('progressText').textContent = 'Partial programming complete — micro:bit restarting';
-  log('Partial programming complete.');
-}
-
-async function quiescePartialNotificationsBeforeDfu() {
-  const partial = partialCharacteristic;
-  if (!partial) return;
-
-  clearNotificationState(new Error('Switching from partial flashing to full DFU'));
-  partial.removeEventListener('characteristicvaluechanged', handlePartialNotification);
-
-  if (typeof partial.stopNotifications === 'function') {
-    try {
-      log('Stopping Partial Programming Service notifications before entering DFU…');
-      await partial.stopNotifications();
-    } catch (error) {
-      // Chrome may report an implementation-specific GATT error while tearing
-      // down a CCCD. This is non-fatal because the full-DFU path does not use
-      // the partial characteristic after this point.
-      log(`Could not stop partial-flash notifications cleanly: ${error.message}. Continuing.`, 'warn');
-    }
-  }
-
-  // Give the browser/SoftDevice GATT operation queue time to settle before a
-  // second CCCD operation is attempted on the Buttonless DFU characteristic.
-  await sleep(350);
-}
-
-async function ensurePairingModeForFullDfu(info) {
-  // micro:bit V2 normally exposes the bonded Buttonless DFU characteristic
-  // (UUID ending 0004). Partial Programming is accessible without proving the
-  // bond, but the DFU CCCD and control write require an encrypted bonded link.
-  // Moving into pairing/programming mode allows the browser and operating
-  // system Bluetooth stack to create or repair that bond when the secured DFU
-  // characteristic is accessed.
-  if (!partialCharacteristic || info?.mode === 0) return info;
-
-  el('progressText').textContent = 'Switching micro:bit to pairing mode for secure DFU…';
-  setState('modeState', 'entering pairing mode', 'busy');
-  log('Switching micro:bit to pairing/programming mode so the browser can establish the DFU bond…');
-
-  try {
-    disconnectPhase = DISCONNECT_PHASE.MODE_SWITCH;
-    await writePartialPacket([0xff, 0x00]);
-    await reconnectAfterPartialModeSwitch();
-  } catch (error) {
-    disconnectPhase = DISCONNECT_PHASE.NONE;
-    throw error;
-  }
-
-  const pairingInfo = await readFlashInfo(preparedFirmware);
-  if (!pairingInfo || pairingInfo.mode !== 0) {
-    throw new Error('micro:bit did not enter pairing/programming mode for bonded DFU');
-  }
-
-  setState('modeState', 'pairing/programming', 'busy');
-  el('progressText').textContent = 'Pairing may be requested — follow the Bluetooth and micro:bit prompts';
-  log('Pairing/programming mode is active. Complete any Bluetooth pairing or authorization prompts shown by the browser, device or operating system. A tick may appear on the micro:bit when pairing completes; the old program can then restart briefly.', 'warn');
-
-  // Let advertising, service discovery and the Bluetooth stack settle before
-  // accessing the secured Buttonless DFU characteristic.
-  await sleep(900);
-  return pairingInfo;
-}
-
-async function establishBondBeforeFullDfu() {
-  setState('connectionState', 'Completing Bluetooth pairing', 'busy');
-  setState('modeState', 'Pairing/authorization', 'busy');
-  el('progressText').textContent = 'Verifying Bluetooth pairing on this phone or computer';
-  log('Phase 1 of 2: establishing and verifying the Bluetooth bond on the current host. A disconnect alone will not be treated as success.');
-
-  const maxAuthorizationAttempts = 2;
-  let authorization = null;
-  let authorizationVerified = false;
-
-  for (let attempt = 1; attempt <= maxAuthorizationAttempts; attempt++) {
-    if (attempt > 1) {
-      await quiescePartialNotificationsBeforeDfu();
-      log(`Retrying bonded DFU authorization after reconnect (${attempt}/${maxAuthorizationAttempts})…`);
-    }
-
-    disconnectPhase = DISCONNECT_PHASE.BOND_AUTHORIZATION;
-    try {
-      authorization = await authorizeBondedButtonlessDfu(applicationDevice, {
-        log,
-        timeoutMs: 8000,
-      });
-    } finally {
-      disconnectPhase = DISCONNECT_PHASE.NONE;
-    }
-
-    if (authorization.disconnected || !applicationDevice?.gatt?.connected) {
-      await reconnectAfterBondAuthorization();
-    } else {
-      await attachApplicationServices();
-    }
-
-    if (!buttonlessAvailable) {
-      throw new Error('Buttonless DFU is not available after the pairing attempt');
-    }
-
-    if (authorization.verified) {
-      authorizationVerified = true;
-      log(`Bluetooth bond verified on authorization attempt ${attempt}.`);
-      break;
-    }
-
-    log(`Authorization attempt ${attempt} did not prove bonded access to characteristic 0004.`, 'warn');
-  }
-
-  let postPairingInfo = null;
-  if (partialCharacteristic) {
-    try {
-      postPairingInfo = await readFlashInfo(preparedFirmware);
-      log(`Application mode after pairing attempts: ${postPairingInfo.mode === 0 ? 'pairing/programming' : postPairingInfo.mode === 1 ? 'application' : `unknown (${postPairingInfo.mode})`}.`);
-    } catch (error) {
-      log(`Could not re-read Partial Programming status after pairing: ${error.message}.`, 'warn');
-    }
-  }
-
-  setState('connectionState', applicationDevice.name || 'Connected', 'good');
-  if (authorizationVerified) {
-    setState('modeState', 'Bond verified', 'good');
-    el('progressText').textContent = 'Bluetooth bond verified — sending the Buttonless DFU command';
-    log('Phase 2 of 2: bonded access is verified. Sending the Buttonless DFU command on the current application link.');
-  } else {
-    setState('modeState', 'Bond not verified', 'warn');
-    el('progressText').textContent = 'Bond verification was inconclusive — testing one secured DFU command';
-    log('Bond verification was inconclusive after two attempts. The app will send the secured DFU command once, but will continue only on a positive write/response or a reboot followed by Secure DFU GATT verification.', 'warn');
-  }
-
-  return {
-    postPairingInfo,
-    authorization,
-    authorizationVerified,
-  };
-}
-
-async function prepareAndEnterFullDfu(info, reason) {
-  if (!buttonlessAvailable) {
-    throw new Error('The installed micro:bit application does not expose Buttonless DFU. Program a Bluetooth/DFU-enabled base firmware over USB first.');
-  }
-
-  const approved = await requestFullDfuApproval(info, preparedFirmware, reason);
-  if (!approved) {
-    el('progressText').textContent = 'Full application flash cancelled';
-    log('Full application DFU cancelled.', 'warn');
-    return;
-  }
-
-  setState('methodState', 'Full application DFU', 'warn');
-  resetProgress(preparedFirmware.applicationBytes, 'Preparing full application DFU…');
-  log(`Preparing application image ${formatHexAddress(preparedFirmware.applicationStart)}–${formatHexAddress(preparedFirmware.applicationEnd)} (${formatBytes(preparedFirmware.applicationBytes)}).`);
-  const initPacket = await createMicrobitV2InitPacket(preparedFirmware.applicationBin);
-  const hashMode = new DataView(initPacket.buffer).getUint32(20, true) === 32 ? 'SHA-256' : 'no init-packet hash';
-  log(`Created micro:bit V2 DFU init packet using ${hashMode}.`);
-
-  const preparedPackage = {
-    initPacket,
-    firmware: preparedFirmware.applicationBin,
-    applicationStart: preparedFirmware.applicationStart,
-    fileName: selectedFileName,
-    entryConfidence: 'none',
-  };
-
-  info = await ensurePairingModeForFullDfu(info);
-  await quiescePartialNotificationsBeforeDfu();
-
-  const bondResult = await establishBondBeforeFullDfu();
-  await quiescePartialNotificationsBeforeDfu();
-
-  pendingDfu = preparedPackage;
-  dfuChooserReady = false;
-  buttonlessDfuCommandAttempted = false;
-  unsupportedDfuCandidateIds.clear();
-  applicationDeviceIdBeforeDfu = applicationDevice?.id || null;
-  showDfuHandoffDialog();
-  setState('connectionState', 'Sending DFU reboot command', 'busy');
-  setState('modeState', bondResult.authorizationVerified ? 'Bond verified' : 'Bond unverified', bondResult.authorizationVerified ? 'good' : 'warn');
-  el('progressText').textContent = 'Sending one secured Buttonless DFU command';
-  updateButtons();
-
-  let outcome;
-  try {
-    outcome = await enterButtonlessDfu(applicationDevice, {
-      log,
-      skipAuthorization: true,
-      authorizationVerified: bondResult.authorizationVerified,
-      onCommandAttempt: () => {
-        buttonlessDfuCommandAttempted = true;
-        disconnectPhase = DISCONNECT_PHASE.DFU_HANDOFF;
-      },
-    });
-  } catch (error) {
-    pendingDfu = null;
-    dfuChooserReady = false;
-    const guidance = 'DFU mode was not observed. Reconnect the micro:bit and retry. If this repeats, remove the existing Bluetooth pairing on this phone or computer and pair again.';
-    log(guidance, 'warn');
-    throw new Error(`${error.message} ${guidance}`);
-  } finally {
-    disconnectPhase = DISCONNECT_PHASE.NONE;
-  }
-
-  const entryResult = classifyDfuEntry(outcome);
-  preparedPackage.entryConfidence = entryResult;
-
-  if (entryResult === 'confirmed') {
-    markDfuChooserReady();
-    const evidence = outcome.commandAccepted
-      ? 'the micro:bit accepted the Buttonless DFU command'
-      : 'the secured Buttonless DFU write completed';
-    log(`DFU reboot command confirmed because ${evidence}. The app will now verify control 0001 and packet 0002 before transferring firmware.`);
-  } else if (entryResult === 'uncertain') {
-    markDfuChooserReady();
-    setState('modeState', 'DFU entry uncertain', 'warn');
-    el('progressText').textContent = 'The application disconnected after a failed write — checking once for Secure DFU';
-    log('The application disconnected, but neither the secured write nor the command response was confirmed. One automatic GATT check is allowed because some Bluetooth stacks reject the write promise after the device has already rebooted. If it still exposes 0004, automatic retry stops and the manual DfuTarg selector remains available.', 'warn');
-  } else {
-    pendingDfu = null;
-    dfuChooserReady = false;
-    throw new Error('The Buttonless DFU command was not accepted and no reboot disconnect was observed. Reconnect the micro:bit and retry Bluetooth pairing.');
-  }
-
-  updateButtons();
+  el('progressText').textContent = 'Programming complete. The micro:bit is restarting.';
+  el('bytesText').textContent = totalBytes ? `${formatBytes(totalBytes)} / ${formatBytes(totalBytes)}` : 'Complete';
+  el('timeText').textContent = 'Complete';
+  setState('programState', 'Complete', 'good');
 }
 
 async function program() {
-  if (flashInProgress) return log('Programming already in progress; duplicate click ignored.', 'warn');
-  if (!preparedFirmware) throw new Error('Choose a valid micro:bit V2 HEX first');
-  if (!applicationDevice?.gatt?.connected) throw new Error('Connect the micro:bit first');
+  if (busy) return;
+  if (!preparedFirmware || !currentInfo?.supported) {
+    setUsbRecommended();
+    return;
+  }
+  if (!microbit?.gatt?.connected || !characteristic) {
+    setState('connectionState', 'Not connected', 'warn');
+    setProgressMessage('Connect your micro:bit before programming.');
+    return;
+  }
 
-  flashInProgress = true;
+  busy = true;
+  expectedRestart = false;
+  setState('programState', 'Programming…', 'busy');
+  setProgressMessage('Preparing to send the program…');
   updateButtons();
   await acquireWakeLock();
 
   try {
-    let info = null;
-    if (partialCharacteristic && preparedFirmware.markerCandidates.length) {
-      log('Checking runtime hashes and program layout…');
-      info = await readFlashInfo(preparedFirmware);
-    }
+    let info = currentInfo;
 
-    if (info?.runtimeMatches && info.layoutMatches) {
-      await runPartialFlash(info);
+    if (info.mode === 1 && info.programMatches) {
+      expectedRestart = true;
+      await writePacket([0xff, 0x01]);
+      showComplete(0);
+      log('The program was already installed and the micro:bit was restarted.');
       return;
     }
 
-    let reason;
-    if (!partialCharacteristic) {
-      reason = 'The installed application does not expose the Partial Programming Service, so the full application must be replaced.';
-    } else if (!preparedFirmware.markerCandidates.length) {
-      reason = 'The HEX has no usable MakeCode partial-flash marker, so it cannot be safely partial-flashed.';
-    } else if (!info?.layoutMatches) {
-      reason = 'The HEX program layout differs from the installed runtime. Full DFU will replace the runtime and program together.';
-    } else {
-      reason = 'The HEX was compiled with a different runtime. Full DFU will replace the runtime and program together.';
-    }
+    if (info.mode !== 0) {
+      reconnecting = true;
+      await writePacket([0xff, 0x00]);
+      await reconnectForProgramming();
+      info = await readProgrammingInfo();
 
-    await prepareAndEnterFullDfu(info, reason);
-  } catch (error) {
-    log(error.message, 'error');
-    el('progressText').textContent = `Stopped: ${error.message}`;
-  } finally {
-    flashInProgress = false;
-    await releaseWakeLock();
-    updateButtons();
-    if (dfuChooserReady) {
-      queueMicrotask(() => el('selectDfu')?.focus({ preventScroll: false }));
-    }
-  }
-}
-
-async function selectDfuAndFlash() {
-  if (!pendingDfu) throw new Error('No full DFU transfer is pending');
-  if (!dfuChooserReady) throw new Error('Wait for the micro:bit application to disconnect before opening the DFU selector');
-  if (flashInProgress) return;
-
-  // Keep this as the first awaited operation: requestDevice must run directly
-  // from this click. Browsers do not permit the page to open it automatically
-  // after a system Bluetooth prompt closes.
-  const bootloaderDevice = await requestDfuDevice();
-  log(`Selected DFU candidate: ${bootloaderDevice.name || '(unnamed / unknown device)'} [browser id ${bootloaderDevice.id}].`);
-
-  if (unsupportedDfuCandidateIds.has(bootloaderDevice.id)) {
-    throw new Error('This Bluetooth entry already returned “Unsupported device” during the current DFU handoff and is not GATT-connectable. Reopen the selector and choose another newly discovered entry, or cancel and enter DFU mode again to start a new handoff.');
-  }
-
-  // Do not reject a candidate by its advertised name or opaque browser ID.
-  // A rebooted DFU identity can retain the BBC micro:bit name, and a browser can
-  // allocate a new BluetoothDevice.id or reuse an existing permission identity.
-  // The reliable test available to the page is the connected GATT table: Secure
-  // DFU must expose 0001 + 0002.
-  if (applicationDeviceIdBeforeDfu && bootloaderDevice.id === applicationDeviceIdBeforeDfu) {
-    log('The selected entry uses the same browser identity as the application device. Continuing to GATT verification because the physical address and service table may have changed after reboot.', 'warn');
-  }
-  if ((bootloaderDevice.name || '').startsWith('BBC micro:bit')) {
-    log('The selected DFU candidate retained the BBC micro:bit name. The name is not used for rejection; verifying Secure DFU control and packet characteristics now.', 'warn');
-  }
-  flashInProgress = true;
-  updateButtons();
-  await acquireWakeLock();
-
-  const startedAt = performance.now();
-  const packageToFlash = pendingDfu;
-  resetProgress(packageToFlash.firmware.length, 'Candidate selected; attempting GATT connection…');
-  setState('connectionState', 'Candidate selected', 'busy');
-  setState('modeState', 'DFU not confirmed', 'busy');
-
-  const dfu = new NordicSecureDfu({
-    log,
-    packetDelayMs: 4,
-    packetReceiptInterval: 12,
-    objectDrainDelayMs: 150,
-    progress: event => {
-      if (event.type === 'init') {
-        setState('connectionState', bootloaderDevice.name || 'DFU bootloader', 'good');
-        setState('modeState', 'Secure DFU confirmed', 'good');
-        setState('serviceState', 'Secure DFU 0001 + 0002', 'good');
-        el('progressText').textContent = 'Transferring and validating DFU init packet…';
-        return;
+      if (!info?.supported || info.mode !== 0) {
+        setUsbRecommended();
+        throw new Error('The program cannot be sent by Bluetooth');
       }
-      if (event.type === 'firmware') {
-        const total = event.totalBytes || packageToFlash.firmware.length;
-        updateProgress(
-          Math.min(event.currentBytes, total),
-          total,
-          startedAt,
-          packageToFlash.applicationStart + Math.min(event.currentBytes, total),
-          'Full DFU',
-        );
-      }
-    },
-  });
+      currentInfo = info;
+    }
 
-  try {
-    setState('methodState', 'Full application DFU', 'busy');
-    disconnectPhase = DISCONNECT_PHASE.DFU_TRANSFER;
-    log(`Starting full application DFU for ${packageToFlash.fileName}.`);
-    await dfu.update(bootloaderDevice, packageToFlash.initPacket, packageToFlash.firmware);
-    updateProgress(
-      packageToFlash.firmware.length,
-      packageToFlash.firmware.length,
-      startedAt,
-      packageToFlash.applicationStart + packageToFlash.firmware.length,
-      'Full DFU',
-      true,
-    );
-    el('progressPercent').textContent = '100%';
-    el('progressText').textContent = 'Full application programming complete — micro:bit restarting';
-    setState('methodState', 'Full DFU complete', 'good');
-    setState('connectionState', 'Restarting', 'busy');
-    log('Full application DFU complete. Runtime and user program were replaced; SoftDevice and bootloader were preserved.');
-    pendingDfu = null;
-    dfuChooserReady = false;
-    applicationDeviceIdBeforeDfu = null;
-    buttonlessDfuCommandAttempted = false;
-    unsupportedDfuCandidateIds.clear();
-    applicationDevice = null;
-    partialCharacteristic = null;
-    buttonlessAvailable = false;
+    const transferEnd = info.deviceProgram.end;
+    const totalBytes = transferEnd - info.image.magicOffset;
+    await transferProgram(info.image, transferEnd);
+
+    expectedRestart = true;
+    await writePacket([0x02]);
+    showComplete(totalBytes);
+    log('Programming completed successfully.');
+    currentInfo = null;
   } catch (error) {
-    if (error?.code === 'DFU_CANDIDATE_UNSUPPORTED' || /^Unsupported device\b/i.test(error?.message || '')) {
-      unsupportedDfuCandidateIds.add(bootloaderDevice.id);
-      log(`Marked browser id ${bootloaderDevice.id} as non-GATT-connectable for this DFU handoff. Selecting the same cached entry again will be rejected without another connection attempt.`, 'warn');
-    }
-
-    log(error.message, 'error');
-
-    if (error?.code === 'DFU_CANDIDATE_APPLICATION') {
-      el('progressText').textContent = 'The selected identity is still in application mode (0004), not Secure DFU';
-      setState('methodState', 'DFU entry not confirmed', 'warn');
-      setState('modeState', 'Application 0004 detected', 'warn');
-      log('The original Bluetooth identity returned to the application GATT table. Automatic selection will not run again. Select DfuTarg manually only when it is visibly present; otherwise cancel, reconnect, and repair the Bluetooth pairing on this host.', 'warn');
-    } else {
-      el('progressText').textContent = `DFU stopped: ${error.message}`;
-      setState('methodState', 'DFU retry available', 'warn');
-      log('The prepared DFU package remains available. Reopen the selector and reselect the DFU device; the bootloader-reported offset and CRC will be used to resume safely. Cancel and enter DFU mode again only when the DFU device is no longer available.', 'warn');
-    }
+    console.error(error);
+    expectedRestart = false;
+    setState('programState', 'Try again', 'warn');
+    setProgressMessage('Programming stopped. Reconnect the micro:bit and try again.');
+    el('timeText').textContent = 'Stopped';
+    log('Programming stopped. Reconnect the micro:bit and try again.', 'error');
   } finally {
-    disconnectPhase = DISCONNECT_PHASE.NONE;
-    flashInProgress = false;
+    busy = false;
     await releaseWakeLock();
     updateButtons();
   }
@@ -1014,122 +652,90 @@ async function selectDfuAndFlash() {
 
 async function loadHexFile(file) {
   if (!file) return;
+
   selectedFileName = file.name;
-  const selectedHex = await file.text();
   preparedFirmware = null;
-  pendingDfu = null;
-  dfuChooserReady = false;
-  applicationDeviceIdBeforeDfu = null;
-  buttonlessDfuCommandAttempted = false;
-  disconnectPhase = DISCONNECT_PHASE.NONE;
-  unsupportedDfuCandidateIds.clear();
+  currentInfo = null;
   setState('fileState', 'Checking…', 'busy');
-  setState('runtimeState', 'Not checked', 'neutral');
-  setState('methodState', 'Not selected', 'neutral');
+  setState('programState', 'Waiting', 'neutral');
   el('fileName').textContent = selectedFileName;
-  el('fileDetails').textContent = '';
-  resetProgress(0, 'Checking HEX file…');
+  el('fileDetails').textContent = 'Checking file…';
+  resetProgress(0, 'Checking the selected file…');
 
   try {
-    preparedFirmware = prepareFirmware(selectedHex);
-    const type = preparedFirmware.universal
-      ? `Universal HEX → micro:bit V2 board 0x${preparedFirmware.boardId.toString(16).toUpperCase()}`
-      : 'Intel HEX';
-    const partial = preparedFirmware.markerCandidates.length
-      ? `partial marker ${formatHexAddress(preparedFirmware.magicOffset)}`
-      : 'full DFU only';
-    el('fileDetails').textContent = `${type} · ${partial} · full application ${formatBytes(preparedFirmware.applicationBytes)}`;
-    setState('fileState', 'Ready', 'good');
-    resetProgress(preparedFirmware.applicationBytes, 'HEX ready — connect and program');
-    el('status').textContent = 'HEX loaded.';
-    log(`STEM Smart Labs Bluetooth Programmer v${APP_VERSION}`);
-    log(`File: ${selectedFileName}`);
-    log(`${type}; copied ${formatBytes(preparedFirmware.copiedBytes)} from ${preparedFirmware.dataRecords} data records.`);
-    log(`Full DFU application: ${formatHexAddress(preparedFirmware.applicationStart)}–${formatHexAddress(preparedFirmware.applicationEnd)} (${formatBytes(preparedFirmware.applicationBytes)}).`);
-    if (preparedFirmware.markerCandidates.length) {
-      log(`Found ${preparedFirmware.markerCandidates.length} MakeCode partial-flash marker(s).`);
-      log(`First marker runtime ${preparedFirmware.runtimeHash}, program ${preparedFirmware.programHash}.`);
+    const text = await file.text();
+    preparedFirmware = prepareFirmware(text);
+
+    if (!preparedFirmware.markerCandidates.length) {
+      setState('fileState', 'Use USB', 'warn');
+      el('fileDetails').textContent = 'This file is not suitable for Bluetooth programming.';
+      setUsbRecommended();
+      log('The selected file requires USB programming.', 'warn');
     } else {
-      log('No valid partial-flash marker found; this HEX can be programmed only by full application DFU.', 'warn');
+      setState('fileState', 'Ready', 'good');
+      el('fileDetails').textContent = `MakeCode file ready · ${formatBytes(file.size)}`;
+      resetProgress(preparedFirmware.estimatedTransferBytes, 'File ready. Connect your micro:bit.');
+      log(`File selected: ${selectedFileName}`);
+      await checkCompatibility();
     }
-    if (!preparedFirmware.sawEof) log('Intel HEX EOF record was not found; validated records were still parsed.', 'warn');
   } catch (error) {
+    console.error(error);
     preparedFirmware = null;
-    setState('fileState', 'Invalid', 'bad');
-    el('fileDetails').textContent = error.message;
-    log(error.message, 'error');
+    setState('fileState', 'Not valid', 'bad');
+    setState('programState', 'Waiting', 'neutral');
+    el('fileDetails').textContent = 'Choose a valid micro:bit V2 MakeCode .hex file.';
+    resetProgress(0, 'The selected file could not be used.');
+    log('The selected file could not be used.', 'error');
   }
+
   updateButtons();
 }
 
-function cancelPendingDfu() {
-  if (flashInProgress) return;
-  pendingDfu = null;
-  dfuChooserReady = false;
-  applicationDeviceIdBeforeDfu = null;
-  buttonlessDfuCommandAttempted = false;
-  disconnectPhase = DISCONNECT_PHASE.NONE;
-  unsupportedDfuCandidateIds.clear();
-  setState('methodState', 'Cancelled', 'neutral');
-  el('progressText').textContent = 'Full DFU selection cancelled';
-  log('Pending full DFU transfer cancelled.', 'warn');
-  updateButtons();
-}
+function disconnect() {
+  if (busy) return;
 
-function disconnectApplication() {
-  if (flashInProgress) return log('Cannot disconnect while programming is in progress.', 'warn');
-  applicationDevice?.gatt?.disconnect();
-  applicationDevice = null;
-  partialCharacteristic = null;
-  buttonlessAvailable = false;
-  pendingDfu = null;
-  dfuChooserReady = false;
-  applicationDeviceIdBeforeDfu = null;
-  buttonlessDfuCommandAttempted = false;
-  disconnectPhase = DISCONNECT_PHASE.NONE;
-  unsupportedDfuCandidateIds.clear();
-  setState('connectionState', 'Disconnected', 'neutral');
-  setState('modeState', 'Unknown', 'neutral');
-  setState('serviceState', 'Not checked', 'neutral');
-  setState('runtimeState', 'Not checked', 'neutral');
-  setState('methodState', 'Not selected', 'neutral');
+  if (microbit) {
+    microbit.removeEventListener('gattserverdisconnected', handleDisconnected);
+    try { microbit.gatt?.disconnect(); } catch {}
+  }
+
+  microbit = null;
+  characteristic = null;
+  currentInfo = null;
+  expectedRestart = false;
+  reconnecting = false;
+  clearNotificationState();
+  setState('connectionState', 'Not connected', 'neutral');
+  setState('programState', preparedFirmware ? 'Connect to check' : 'Waiting', 'neutral');
+  setProgressMessage(preparedFirmware
+    ? 'Connect the micro:bit to check this file.'
+    : 'Choose a file and connect your micro:bit.');
+  log('Disconnected.');
   updateButtons();
 }
 
 function setTextIfPresent(id, text) {
-  const element = document.getElementById(id);
-  if (element) element.textContent = text;
+  const target = document.getElementById(id);
+  if (target) target.textContent = text;
 }
 
 setTextIfPresent('appVersion', `v${APP_VERSION}`);
 setTextIfPresent('buildLabel', `Build ${APP_VERSION}`);
 setTextIfPresent('status', `Ready.\nSTEM Smart Labs Bluetooth Programmer v${APP_VERSION}`);
-log('Matching runtime/layout uses partial flash; mismatches use full application Secure DFU.');
 
 el('hexFile').addEventListener('change', event => loadHexFile(event.target.files?.[0]));
-el('connect').addEventListener('click', () => connectApplication().catch(error => {
-  setState('connectionState', 'Connection failed', 'bad');
-  log(error.message, 'error');
-  updateButtons();
-}));
-el('program').addEventListener('click', () => program().catch(error => log(error.message, 'error')));
-const handleDfuSelectionClick = () => selectDfuAndFlash().catch(error => {
-  log(error.message, 'error');
-  el('progressText').textContent = `DFU device selection failed: ${error.message}`;
-  updateButtons();
-});
-el('selectDfu').addEventListener('click', handleDfuSelectionClick);
-el('cancelDfu').addEventListener('click', cancelPendingDfu);
-el('disconnect').addEventListener('click', disconnectApplication);
+el('connect').addEventListener('click', connect);
+el('program').addEventListener('click', program);
+el('disconnect').addEventListener('click', disconnect);
 el('clearLog').addEventListener('click', () => {
-  el('status').textContent = `Log cleared.\nApp version: ${APP_VERSION}`;
+  el('status').textContent = `Ready.\nApp version ${APP_VERSION}`;
 });
 el('copyLog').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(el('status').textContent);
-    log('Diagnostic log copied to clipboard.');
-  } catch (error) {
-    log(`Could not copy log: ${error.message}`, 'warn');
+    log('Activity details copied.');
+  } catch {
+    log('Activity details could not be copied.', 'warn');
   }
 });
 
@@ -1149,13 +755,13 @@ for (const eventName of ['dragleave', 'drop']) {
 dropZone.addEventListener('drop', event => loadHexFile(event.dataTransfer?.files?.[0]));
 
 if (!window.isSecureContext) {
-  el('status').textContent = 'Web Bluetooth requires HTTPS or localhost. GitHub Pages supplies HTTPS automatically.';
-  el('connect').disabled = true;
   setState('connectionState', 'HTTPS required', 'bad');
-} else if (!navigator.bluetooth) {
-  el('status').textContent = 'Web Bluetooth is unavailable. Open this page in a browser and operating system that support Web Bluetooth.';
+  setProgressMessage('Open this page using HTTPS.');
   el('connect').disabled = true;
-  setState('connectionState', 'Unsupported browser', 'bad');
+} else if (!navigator.bluetooth) {
+  setState('connectionState', 'Not supported', 'bad');
+  setProgressMessage('Bluetooth programming is not supported in this browser. Use USB.');
+  el('connect').disabled = true;
 }
 
 updateButtons();
