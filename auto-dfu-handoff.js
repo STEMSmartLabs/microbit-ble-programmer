@@ -1,13 +1,14 @@
 /**
- * Automatic Secure DFU handoff for v2.4.0.
+ * Automatic Secure DFU handoff for v2.4.1.
  *
  * The original permitted BluetoothDevice is tried once after a possible or
  * confirmed DFU reboot. A failed GATT verification never re-arms the automatic
  * click. The normal browser chooser remains the manual fallback.
  */
+import './bluetooth-security-reset.js?v=2.4.1';
 import { AutomaticDfuHandoffState } from './handoff-state.js?v=2.4.0';
 
-const HANDOFF_VERSION = '2.4.0';
+const HANDOFF_VERSION = '2.4.1';
 const bluetooth = navigator.bluetooth;
 const originalRequestDevice = bluetooth?.requestDevice?.bind(bluetooth);
 const handoffState = new AutomaticDfuHandoffState();
@@ -93,7 +94,7 @@ function watchDfuSelector() {
   evaluate();
 }
 
-await import('./app.js?v=2.4.0');
+await import('./app.js?v=2.4.1');
 
 const appVersion = document.getElementById('appVersion');
 const buildLabel = document.getElementById('buildLabel');
@@ -101,6 +102,6 @@ const status = document.getElementById('status');
 if (appVersion) appVersion.textContent = `v${HANDOFF_VERSION}`;
 if (buildLabel) buildLabel.textContent = `Build ${HANDOFF_VERSION}`;
 if (status) {
-  status.textContent += `\nDFU entry state machine v${HANDOFF_VERSION}: bond verification, strict command outcome, one automatic target check.`;
+  status.textContent += `\nDFU entry state machine v${HANDOFF_VERSION}: clean GATT reset after secured authorization errors, strict command outcome, one automatic target check.`;
 }
 watchDfuSelector();
