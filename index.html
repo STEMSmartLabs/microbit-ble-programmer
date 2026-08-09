@@ -55,7 +55,7 @@
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">When partial programming is compatible, only partial flashing is used. When full DFU is required, the app requests pairing/programming mode once, then performs one real secured Buttonless DFU reboot write without separate authorization probes. When Continue appears, press it promptly and select the rebooted micro:bit from Chrome's fresh Bluetooth scan.</p>
+      <p class="chooser-help">When partial programming is compatible, only partial flashing is used. When full DFU is required, the app prepares pairing once, enables the bonded Buttonless DFU indications required by Nordic, then sends the reboot command on that same secured connection. If pairing restarts the application, one reconnect is allowed before repeating the indication setup. When Continue appears, select the rebooted micro:bit from Chrome's fresh Bluetooth scan.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.6</span>
+      <span id="buildLabel">Build 2.4.7</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU requests pairing/programming mode once and lets the refreshed Bluetooth state settle. It does not perform separate bonded 0004 notification authorization probes. Instead it sends the real secured Buttonless DFU reboot operation once and classifies the actual write, response and disconnect outcome. After reboot, press Continue for a fresh Chrome Bluetooth scan. Firmware data remains checksum-paced and every bootloader data object is validated before execution.</p>
+    <p>Full DFU follows Nordic's bonded Buttonless DFU sequence: prepare pairing once, enable indications on characteristic 0004, then send Enter Bootloader opcode 0x01 on that same secured connection. If pairing causes one application restart, the app reconnects once and repeats only the required 0004 indication setup before sending 0x01. After reboot, press Continue for a fresh Chrome Bluetooth scan. Firmware data remains checksum-paced and every bootloader data object is validated before execution.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -127,6 +127,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.6"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.7"></script>
 </body>
 </html>
