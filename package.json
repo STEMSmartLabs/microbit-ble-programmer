@@ -1,6 +1,6 @@
 {
   "name": "stem-smart-labs-microbit-ble-programmer",
-  "version": "2.4.6",
+  "version": "2.4.7",
   "private": true,
   "type": "module",
   "scripts": {
