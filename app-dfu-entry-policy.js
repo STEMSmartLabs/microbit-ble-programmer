@@ -98,12 +98,16 @@ function nordicBondedTransactionFunction() {
   try {
     try {
       await enableIndications('initial connection');
-      // A first-time or repaired pairing may complete successfully and then
-      // restart the application shortly afterwards. Observe that short window.
-      await sleep(800);
+      // CODAL may disconnect about two seconds after a successful pairing.
+      // Observe beyond that delay before deciding the same connection is stable.
+      await sleep(2600);
       pairingRestartObserved = !applicationDevice?.gatt?.connected;
     } catch (error) {
       firstError = error;
+      // On macOS the secured CCCD operation may reject before the later pairing
+      // restart/disconnect is delivered. Wait for that delayed evidence before
+      // deciding whether the one reconnect path should be used.
+      if (applicationDevice?.gatt?.connected) await sleep(2600);
       pairingRestartObserved = !applicationDevice?.gatt?.connected;
       if (!pairingRestartObserved) {
         throw new Error(\`Could not enable bonded DFU indications on 0004: \${error.message}\`);
