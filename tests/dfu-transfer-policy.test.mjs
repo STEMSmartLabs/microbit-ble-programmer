@@ -15,9 +15,9 @@ function crc32(data, seed = 0xffffffff) {
 }
 
 class FakeDfu {
-  constructor(firmware, firstChecksumOffset = firmware.length) {
+  constructor(firmware, checksumOffsets = []) {
     this.firmware = firmware;
-    this.firstChecksumOffset = firstChecksumOffset;
+    this.checksumOffsets = checksumOffsets;
     this.packetDelayMs = 4;
     this.recoveryPacketDelayMs = 10;
     this.objectDrainDelayMs = 0;
@@ -38,8 +38,9 @@ class FakeDfu {
   log(message, level) { this.logs.push({ message, level }); }
   async writePackets(_data, baseOffset, _type, options) { this.writes.push({ baseOffset, options }); }
   async checksum() {
+    const offset = this.checksumOffsets[this.checksumCalls]
+      ?? Math.min((this.checksumCalls + 1) * 4096, this.firmware.length);
     this.checksumCalls++;
-    const offset = this.checksumCalls === 1 ? this.firstChecksumOffset : this.firmware.length;
     return { offset, crc: crc32(this.firmware.slice(0, offset)) };
   }
   async execute() { this.executes++; }
@@ -47,30 +48,36 @@ class FakeDfu {
 
 installChecksumPacedFirmwareTransfer(FakeDfu);
 
-test('normal firmware transfer disables PRNs and validates by object checksum', async () => {
-  const firmware = Uint8Array.from({ length: 4096 }, (_, index) => index & 0xff);
-  const dfu = new FakeDfu(firmware);
+test('first firmware object is stabilized while later objects return to normal pacing', async () => {
+  const firmware = Uint8Array.from({ length: 8192 }, (_, index) => index & 0xff);
+  const dfu = new FakeDfu(firmware, [4096, 8192]);
+  dfu.firstFirmwareObjectSettleMs = 0;
+  dfu.firstFirmwareObjectDrainDelayMs = 0;
   await dfu.transferFirmware(firmware);
 
-  assert.deepEqual(dfu.prnValues, [0]);
-  assert.equal(dfu.writes.length, 1);
+  assert.deepEqual(dfu.prnValues, [0, 0]);
+  assert.equal(dfu.writes.length, 2);
   assert.equal(dfu.writes[0].baseOffset, 0);
   assert.equal(dfu.writes[0].options.receiptInterval, 0);
-  assert.equal(dfu.writes[0].options.packetDelayMs, 8);
-  assert.equal(dfu.executes, 1);
+  assert.equal(dfu.writes[0].options.packetDelayMs, 15);
+  assert.equal(dfu.writes[1].baseOffset, 4096);
+  assert.equal(dfu.writes[1].options.packetDelayMs, 8);
+  assert.equal(dfu.executes, 2);
+  assert.ok(dfu.logs.some(entry => entry.message.includes('Stabilizing the first firmware data object')));
 });
 
-test('short object resumes from bootloader checksum offset with slower pacing', async () => {
+test('short first object resumes from bootloader checksum offset using stabilized pacing', async () => {
   const firmware = Uint8Array.from({ length: 4096 }, (_, index) => (index * 17) & 0xff);
-  const dfu = new FakeDfu(firmware, 4016);
+  const dfu = new FakeDfu(firmware, [4016, 4096]);
+  dfu.firstFirmwareObjectSettleMs = 0;
+  dfu.firstFirmwareObjectDrainDelayMs = 0;
   await dfu.transferFirmware(firmware);
 
   assert.equal(dfu.writes.length, 2);
   assert.equal(dfu.writes[0].baseOffset, 0);
-  assert.equal(dfu.writes[0].options.receiptInterval, 0);
+  assert.equal(dfu.writes[0].options.packetDelayMs, 15);
   assert.equal(dfu.writes[1].baseOffset, 4016);
-  assert.equal(dfu.writes[1].options.receiptInterval, 0);
-  assert.equal(dfu.writes[1].options.packetDelayMs, 12);
+  assert.equal(dfu.writes[1].options.packetDelayMs, 15);
   assert.equal(dfu.executes, 1);
   assert.ok(dfu.logs.some(entry => entry.message.includes('retransmitting the remaining 80 bytes')));
 });
