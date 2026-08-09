@@ -119,17 +119,21 @@ function liveGattConnectFunction() {
     el('progressText').textContent = preparedFirmware
       ? 'micro:bit is already in recovery mode — press Program to finish programming'
       : 'micro:bit is already in recovery mode — choose a HEX file to recover it';
-    log(`Connected: ${selectedName} [browser id ${applicationDevice.id}]`);
+    log('Connected: ' + selectedName + ' [browser id ' + applicationDevice.id + ']');
     log('Live GATT verification found Secure DFU control 0001 and packet 0002. The micro:bit is already in the bootloader; Program will recover it directly without sending Buttonless DFU opcode 0x01.');
   } else {
     setState('modeState', 'Application', 'good');
     setState('runtimeState', 'Not checked', 'neutral');
     setState('methodState', 'Will be selected automatically', 'neutral');
-    log(`Connected: ${selectedName} [browser id ${applicationDevice.id}]`);
+    log('Connected: ' + selectedName + ' [browser id ' + applicationDevice.id + ']');
     if (/^DfuTarg$/i.test(selectedName)) {
       log('The Bluetooth name is stale (DfuTarg), but live application services were verified. Treating this device as a normal micro:bit application.', 'warn');
     }
-    log(`Services: ${partialCharacteristic ? 'partial programming' : ''}${partialCharacteristic && buttonlessAvailable ? ' + ' : ''}${buttonlessAvailable ? 'buttonless full DFU' : ''}.`);
+    log('Services: '
+      + (partialCharacteristic ? 'partial programming' : '')
+      + (partialCharacteristic && buttonlessAvailable ? ' + ' : '')
+      + (buttonlessAvailable ? 'buttonless full DFU' : '')
+      + '.');
   }
   updateButtons();
 }
@@ -207,7 +211,9 @@ function directSecureDfuRecoveryFunction() {
 
   try {
     disconnectPhase = DISCONNECT_PHASE.DFU_TRANSFER;
-    log(`The selected device is already a verified Secure DFU bootloader. Recovering ${packageToFlash.fileName} directly without application-mode DFU entry.`);
+    log('The selected device is already a verified Secure DFU bootloader. Recovering '
+      + packageToFlash.fileName
+      + ' directly without application-mode DFU entry.');
     await dfu.update(bootloaderDevice, packageToFlash.initPacket, packageToFlash.firmware);
     updateProgress(
       packageToFlash.firmware.length,
@@ -233,7 +239,7 @@ function directSecureDfuRecoveryFunction() {
     unsupportedDfuCandidateIds.clear();
   } catch (error) {
     log(error.message, 'error');
-    el('progressText').textContent = `Recovery stopped: ${error.message}`;
+    el('progressText').textContent = 'Recovery stopped: ' + error.message;
     setState('methodState', 'Recovery retry available', 'warn');
     log('The selected HEX remains loaded. Reconnect the same micro:bit recovery device and press Program again; the bootloader offset and CRC will be checked before any bytes are resumed.', 'warn');
   } finally {
@@ -301,7 +307,7 @@ export function patchAppSourceForLiveGattDeviceState(source, {
   }
   patched = patched.replace(
     programMarker,
-    `\n${directSecureDfuRecoveryFunction()}\nasync function program() {`,
+    '\n' + directSecureDfuRecoveryFunction() + '\nasync function program() {',
   );
 
   const programStart = `  if (!applicationDevice?.gatt?.connected) throw new Error('Connect the micro:bit first');\n\n  flashInProgress = true;`;
@@ -317,7 +323,7 @@ export function patchAppSourceForLiveGattDeviceState(source, {
   if (!patched.includes('{ services: [DFU_SERVICE_UUID] }')) {
     throw new Error('Secure DFU service filter was not added to the Connect chooser');
   }
-  if (!patched.includes("Secure DFU control 0001 and packet 0002")) {
+  if (!patched.includes('Secure DFU control 0001 and packet 0002')) {
     throw new Error('Live Secure DFU service classification was not installed');
   }
   if (!patched.includes('await runDirectSecureDfuRecovery();')) {
@@ -348,7 +354,9 @@ export async function loadLiveGattDeviceStateApp({
     version,
   });
 
-  const sourceWithLabel = `${patchedSource}\n//# sourceURL=${appUrl.href}&device-state-policy=${version}\n`;
+  const sourceWithLabel = patchedSource
+    + '\n//# sourceURL=' + appUrl.href
+    + '&device-state-policy=' + version + '\n';
   const blobUrl = URL.createObjectURL(new Blob([sourceWithLabel], { type: 'text/javascript' }));
   try {
     return await import(blobUrl);
