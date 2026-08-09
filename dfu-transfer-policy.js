@@ -1,6 +1,11 @@
-const PATCH_FLAG = Symbol.for('stem.microbit.checksumPacedFirmwareTransferV243');
+const PATCH_FLAG = Symbol.for('stem.microbit.checksumPacedFirmwareTransferV248');
 const DATA_OBJECT = 0x02;
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+function configuredDelay(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, numeric) : fallback;
+}
 
 export function installChecksumPacedFirmwareTransfer(NordicSecureDfu) {
   const prototype = NordicSecureDfu?.prototype;
@@ -36,10 +41,16 @@ export function installChecksumPacedFirmwareTransfer(NordicSecureDfu) {
       return;
     }
 
+    const firstObjectSettleMs = configuredDelay(this.firstFirmwareObjectSettleMs, 700);
+    const firstObjectPacketDelayMs = Math.max(configuredDelay(this.firstFirmwarePacketDelayMs, 15), 15);
+    const firstObjectDrainDelayMs = configuredDelay(this.firstFirmwareObjectDrainDelayMs, 300);
+    let firstObjectSettleApplied = false;
     let flowPolicyAnnounced = false;
+
     while (offset < firmware.length) {
       const objectStart = Math.floor(offset / maxSize) * maxSize;
       const objectEnd = Math.min(objectStart + maxSize, firmware.length);
+      const firstFirmwareObject = objectStart === 0;
 
       if (offset === objectStart) {
         await this.createObject(DATA_OBJECT, objectEnd - objectStart);
@@ -47,13 +58,22 @@ export function installChecksumPacedFirmwareTransfer(NordicSecureDfu) {
         this.log(`Resuming data object at ${offset} of ${objectEnd}.`);
       }
 
+      if (firstFirmwareObject && !firstObjectSettleApplied) {
+        firstObjectSettleApplied = true;
+        this.log(`Stabilizing the first firmware data object: waiting ${firstObjectSettleMs} ms, then using ${firstObjectPacketDelayMs} ms packet pacing and at least ${firstObjectDrainDelayMs} ms before CRC validation.`);
+        if (firstObjectSettleMs > 0) await sleep(firstObjectSettleMs);
+      }
+
       let sendOffset = offset;
       let recoveryAttempt = 0;
       while (sendOffset < objectEnd) {
         // Web Bluetooth writeWithoutResponse promises only confirm that the host
         // accepted the packet. PRNs can arrive stale or out of phase on some
-        // stacks, so v2.4.3 disables PRNs and treats the bootloader's explicit
-        // Calculate Checksum response as the authoritative progress/CRC source.
+        // stacks, so the transfer disables PRNs and treats the bootloader's
+        // explicit Calculate Checksum response as the authoritative progress/CRC
+        // source. v2.4.8 gives only the first firmware object extra settling and
+        // pacing because fresh-bootloader tests showed a one-time first-object
+        // CRC failure while every subsequent object transferred cleanly.
         await this.setPacketReceiptNotifications(0);
         if (!flowPolicyAnnounced) {
           this.log('DFU firmware flow control: Packet Receipt Notifications disabled; validating each data object with the bootloader checksum.');
@@ -61,9 +81,11 @@ export function installChecksumPacedFirmwareTransfer(NordicSecureDfu) {
         }
 
         const recoveringTail = recoveryAttempt > 0;
-        const packetDelayMs = recoveringTail
-          ? Math.max(Number(this.recoveryPacketDelayMs) || 0, 12)
-          : Math.max(Number(this.packetDelayMs) || 0, 8);
+        const packetDelayMs = firstFirmwareObject
+          ? firstObjectPacketDelayMs
+          : recoveringTail
+            ? Math.max(Number(this.recoveryPacketDelayMs) || 0, 12)
+            : Math.max(Number(this.packetDelayMs) || 0, 8);
 
         await this.writePackets(
           firmware.slice(sendOffset, objectEnd),
@@ -75,7 +97,12 @@ export function installChecksumPacedFirmwareTransfer(NordicSecureDfu) {
           },
         );
 
-        if (this.objectDrainDelayMs > 0) await sleep(this.objectDrainDelayMs);
+        const normalDrainDelayMs = Math.max(0, Number(this.objectDrainDelayMs) || 0);
+        const drainDelayMs = firstFirmwareObject
+          ? Math.max(normalDrainDelayMs, firstObjectDrainDelayMs)
+          : normalDrainDelayMs;
+        if (drainDelayMs > 0) await sleep(drainDelayMs);
+
         const checksum = await this.checksum();
         const prefixMatches = this.verifyPrefix(firmware, checksum.offset, checksum.crc);
 
