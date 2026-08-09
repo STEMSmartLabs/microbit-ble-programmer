@@ -95,10 +95,12 @@ function liveGattConnectFunction() {
     applicationDevice = await navigator.bluetooth.requestDevice({
       // Chrome/macOS may temporarily retain the name DfuTarg after a failed
       // update even when the application is already running again. Permit both
-      // advertised names, then classify only from the connected GATT table.
+      // advertised names. The FE59 filter also permits an unnamed Secure DFU
+      // bootloader when the browser exposes its advertised service UUID.
       filters: [
         { namePrefix: 'BBC micro:bit' },
         { namePrefix: 'DfuTarg' },
+        { services: [DFU_SERVICE_UUID] },
       ],
       optionalServices: [PARTIAL_SERVICE_UUID, DFU_SERVICE_UUID],
     });
@@ -156,12 +158,10 @@ function directSecureDfuRecoveryFunction() {
     return;
   }
 
-  flashInProgress = true;
-  updateButtons();
-  await acquireWakeLock();
-
+  // Prepare everything that can fail before locking the UI into an active
+  // transfer. This prevents an init-packet preparation error from leaving the
+  // page stuck in flashInProgress state.
   const bootloaderDevice = applicationDevice;
-  const startedAt = performance.now();
   const initPacket = await createMicrobitV2InitPacket(preparedFirmware.applicationBin);
   const packageToFlash = {
     initPacket,
@@ -170,6 +170,11 @@ function directSecureDfuRecoveryFunction() {
     fileName: selectedFileName,
   };
 
+  flashInProgress = true;
+  updateButtons();
+  await acquireWakeLock();
+
+  const startedAt = performance.now();
   resetProgress(packageToFlash.firmware.length, 'Recovering micro:bit application…');
   setState('methodState', 'Full application recovery', 'busy');
   setState('modeState', 'Secure DFU recovery', 'busy');
@@ -308,6 +313,9 @@ export function patchAppSourceForLiveGattDeviceState(source, {
 
   if (!patched.includes("{ namePrefix: 'DfuTarg' }")) {
     throw new Error('DfuTarg was not added to the Connect chooser');
+  }
+  if (!patched.includes('{ services: [DFU_SERVICE_UUID] }')) {
+    throw new Error('Secure DFU service filter was not added to the Connect chooser');
   }
   if (!patched.includes("Secure DFU control 0001 and packet 0002")) {
     throw new Error('Live Secure DFU service classification was not installed');
