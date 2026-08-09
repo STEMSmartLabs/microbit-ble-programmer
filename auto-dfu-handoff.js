@@ -1,16 +1,17 @@
 /**
- * Secure DFU handoff for v2.4.5.
+ * Secure DFU handoff for v2.4.6.
  *
- * Runtime mode and pre-authorization are best-effort only. The actual secured
- * Buttonless DFU write/reboot outcome decides whether the app proceeds. After
- * reboot, Continue always opens a fresh Web Bluetooth chooser.
+ * Partial flashing remains unchanged. When full DFU is required, pairing mode
+ * is prepared once, then the app performs one real secured Buttonless DFU write
+ * without separate 0004 notification authorization probes. After reboot,
+ * Continue opens a fresh Web Bluetooth chooser.
  */
-import { NordicSecureDfu } from './dfu.js?v=2.4.5';
-import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.5';
-import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.5';
-import { loadRuntimeIndependentDfuApp } from './app-dfu-entry-policy.js?v=2.4.5';
+import { NordicSecureDfu } from './dfu.js?v=2.4.6';
+import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.6';
+import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.6';
+import { loadRuntimeIndependentDfuApp } from './app-dfu-entry-policy.js?v=2.4.6';
 
-const HANDOFF_VERSION = '2.4.5';
+const HANDOFF_VERSION = '2.4.6';
 installChecksumPacedFirmwareTransfer(NordicSecureDfu);
 installFreshDfuChooserHandoff(NordicSecureDfu, {
   readinessDelayMs: 1800,
@@ -41,6 +42,6 @@ const status = document.getElementById('status');
 if (appVersion) appVersion.textContent = `v${HANDOFF_VERSION}`;
 if (buildLabel) buildLabel.textContent = `Build ${HANDOFF_VERSION}`;
 if (status) {
-  status.textContent += `\nDFU v${HANDOFF_VERSION}: runtime-independent DFU entry; real secured 0004 write is always attempted when available; fresh chooser handoff; checksum-paced firmware transfer.`;
+  status.textContent += `\nDFU v${HANDOFF_VERSION}: partial path unchanged; one pairing preparation; no separate 0004 notification authorization probes; one real secured reboot write; fresh chooser handoff; checksum-paced firmware transfer.`;
 }
 watchDfuSelector();
