@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.7</span>
+      <span id="buildLabel">Build 2.4.8</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU follows Nordic's bonded Buttonless DFU sequence: prepare pairing once, enable indications on characteristic 0004, then send Enter Bootloader opcode 0x01 on that same secured connection. If pairing causes one application restart, the app reconnects once and repeats only the required 0004 indication setup before sending 0x01. After reboot, press Continue for a fresh Chrome Bluetooth scan. Firmware data remains checksum-paced and every bootloader data object is validated before execution.</p>
+    <p>Full DFU follows Nordic's bonded Buttonless DFU sequence from v2.4.7. The first firmware data object is given extra settling, slower packet pacing, and a longer drain before CRC validation; later objects retain the faster checksum-paced transfer. After reboot, press Continue for a fresh Chrome Bluetooth scan.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -127,6 +127,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.7"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.8"></script>
 </body>
 </html>
