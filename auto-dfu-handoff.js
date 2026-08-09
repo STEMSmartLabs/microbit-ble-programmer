@@ -1,19 +1,20 @@
 /**
- * Simplified Bluetooth programming workflow for v2.4.11.
+ * Simplified Bluetooth programming workflow for v2.4.12.
  *
- * v2.4.7 bonded DFU entry, v2.4.8 first-object stabilization, v2.4.9
- * verified-bootloader resume and v2.4.10 live-GATT device classification are
- * retained. v2.4.11 simplifies the customer flow to Connect / Program /
- * Disconnect and adds automatic application reconnect, one safe partial-flash
- * restart, and fresh-identity recovery after a stranded Secure DFU connection.
+ * Proven transfer behavior is retained: v2.4.7 bonded DFU entry, v2.4.8
+ * first-object stabilization, v2.4.9 verified-bootloader resume, v2.4.10
+ * live-GATT classification and v2.4.11 Connect / Program / Disconnect workflow.
+ * v2.4.12 changes only stranded-recovery behavior: one same-device resume
+ * attempt, then reset-once + fresh Connect guidance while preserving the
+ * prepared program package.
  */
-import { NordicSecureDfu } from './dfu.js?v=2.4.11';
-import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.11';
-import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.11';
-import { installVerifiedDfuResume } from './dfu-resume-policy.js?v=2.4.11';
-import { loadSimplifiedWorkflowApp } from './app-workflow-policy.js?v=2.4.11';
+import { NordicSecureDfu } from './dfu.js?v=2.4.12';
+import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.12';
+import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.12';
+import { installVerifiedDfuResume } from './dfu-resume-policy.js?v=2.4.12';
+import { loadResetRecoveryApp } from './app-recovery-policy.js?v=2.4.12';
 
-const HANDOFF_VERSION = '2.4.11';
+const HANDOFF_VERSION = '2.4.12';
 const appVersion = document.getElementById('appVersion');
 const buildLabel = document.getElementById('buildLabel');
 const status = document.getElementById('status');
@@ -28,14 +29,16 @@ installFreshDfuChooserHandoff(NordicSecureDfu, {
   connectionTimeoutMs: 7000,
 });
 installVerifiedDfuResume(NordicSecureDfu, {
-  reconnectDelaysMs: [2000, 3000, 5000],
+  // The same Web Bluetooth DFU identity became repeatedly unusable in the
+  // observed macOS failure. Try it once, then move to reset + fresh Connect.
+  reconnectDelaysMs: [2000],
   connectionTimeoutMs: 7000,
 });
 
 try {
-  await loadSimplifiedWorkflowApp({ version: HANDOFF_VERSION });
+  await loadResetRecoveryApp({ version: HANDOFF_VERSION });
   if (status) {
-    status.textContent += `\nv${HANDOFF_VERSION}: simplified Connect / Program / Disconnect workflow active. Transient application disconnects reconnect automatically, one partial transfer restart is allowed, and stranded Secure DFU recovery uses a fresh Connect selection instead of repeated Continue attempts.`;
+    status.textContent += `\nv${HANDOFF_VERSION}: Connect / Program / Disconnect workflow active. Normal transfer pacing is unchanged. If an interrupted full-programming connection cannot recover once, press the micro:bit reset button once and then Connect; the app will classify the live state and either resume recovery or safely retry from the application.`;
   }
 } catch (error) {
   const message = error?.message || String(error);
