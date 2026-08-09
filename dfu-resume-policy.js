@@ -158,7 +158,7 @@ export function installVerifiedDfuResume(NordicSecureDfu, {
       }
     }
 
-    const error = new Error(`Secure DFU remains in bootloader mode but automatic resume could not reconnect after ${delays.length} attempts. Reopen Continue and select the DFU device; do not re-enter application DFU mode. Last error: ${lastError?.message || 'unknown transport error'}`);
+    const error = new Error(`Secure DFU remains in recovery mode but automatic reconnect could not restore the Bluetooth link after ${delays.length} attempt${delays.length === 1 ? '' : 's'}. The prepared program is still available. Last error: ${lastError?.message || 'unknown transport error'}`);
     error.code = 'DFU_AUTO_RESUME_FAILED';
     error.cause = lastError;
     throw error;
