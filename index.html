@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#882c84">
-  <meta name="description" content="Program a BBC micro:bit V2 MakeCode HEX over Bluetooth using partial flashing or full application DFU.">
+  <meta name="description" content="Program a BBC micro:bit V2 over Bluetooth.">
   <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
   <link rel="icon" type="image/png" href="assets/stem-smart-labs-logo.png">
   <link rel="manifest" href="manifest.webmanifest">
@@ -19,13 +19,13 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.10</small></h1>
-        <p>Fast partial flashing when compatible, full application Secure DFU when the runtime differs.</p>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.11</small></h1>
+        <p>Choose a program, connect your micro:bit and program it wirelessly.</p>
       </div>
     </header>
 
     <div class="notice">
-      Full DFU replaces the micro:bit V2 application runtime and user program together while preserving the SoftDevice and bootloader.
+      Keep the micro:bit powered and close to this computer while programming.
     </div>
 
     <section class="file-panel" aria-labelledby="fileHeading">
@@ -49,20 +49,20 @@
         <div><span class="step">2</span><h2 id="connectHeading">Connect and program</h2></div>
       </div>
       <div class="actions">
-        <button id="connect" class="primary">Connect micro:bit</button>
-        <button id="program" class="accent" disabled>Program over Bluetooth</button>
-        <button id="selectDfu" class="dfu" hidden>Continue</button>
-        <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
+        <button id="connect" class="primary">Connect</button>
+        <button id="program" class="accent" disabled>Program</button>
+        <button id="selectDfu" class="dfu" hidden aria-hidden="true" tabindex="-1">Continue</button>
+        <button id="cancelDfu" class="secondary" hidden aria-hidden="true" tabindex="-1">Cancel</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">Connect can accept either a normal BBC micro:bit entry or a DfuTarg recovery entry. The app verifies the live Bluetooth services after connection, so a stale device name is ignored. Normal applications use partial programming when compatible or the bonded full-update path when required. A micro:bit already in recovery mode can be programmed directly without another reboot.</p>
+      <p class="chooser-help">The app automatically chooses the safest programming method. If Bluetooth is interrupted, it will try to reconnect. If the browser needs you to select the micro:bit again, the app will tell you which button to press.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
-        <div><span>micro:bit mode</span><strong id="modeState" data-state="neutral">Unknown</strong></div>
-        <div><span>Services</span><strong id="serviceState" data-state="neutral">Not checked</strong></div>
-        <div><span>Runtime</span><strong id="runtimeState" data-state="neutral">Not checked</strong></div>
-        <div><span>Method</span><strong id="methodState" data-state="neutral">Not selected</strong></div>
+        <div><span>micro:bit</span><strong id="modeState" data-state="neutral">Unknown</strong></div>
+        <div><span>Connection</span><strong id="serviceState" data-state="neutral">Not checked</strong></div>
+        <div><span>Program check</span><strong id="runtimeState" data-state="neutral">Not checked</strong></div>
+        <div><span>Method</span><strong id="methodState" data-state="neutral">Automatic</strong></div>
       </div>
     </section>
 
@@ -78,58 +78,55 @@
       </div>
     </section>
 
-    <section class="log-panel" aria-labelledby="logHeading">
+    <details class="log-panel">
+      <summary>Activity and diagnostics</summary>
       <div class="log-heading">
-        <h2 id="logHeading">Activity and diagnostics</h2>
+        <span></span>
         <div>
           <button id="copyLog" class="text-button">Copy log</button>
           <button id="clearLog" class="text-button">Clear</button>
         </div>
       </div>
       <pre id="status">Ready.</pre>
-    </section>
+    </details>
 
     <details class="help-panel">
       <summary>Compatibility and safety notes</summary>
       <ul>
-        <li>The app determines whether the micro:bit is running its application or Secure DFU from the live connected GATT characteristics, not from the cached Bluetooth name.</li>
-        <li>When the installed runtime hash and MakeCode program layout match, the app uses the fast Partial Programming Service.</li>
-        <li>When the runtime or layout differs, the app extracts the V2 application region and uses Nordic Secure DFU to replace the runtime and program together.</li>
-        <li>If the micro:bit is already in Secure DFU recovery mode, Program writes the selected HEX directly without sending another Buttonless DFU reboot command.</li>
-        <li>Full application DFU does not intentionally replace the SoftDevice, bootloader or interface-chip firmware.</li>
-        <li>The new HEX should retain Bluetooth/DFU support if future wireless full updates are required.</li>
-        <li>If Bluetooth drops after the Secure DFU bootloader is verified, the app automatically reconnects to that same bootloader and resumes from its reported offset and CRC before asking for manual recovery.</li>
+        <li>The app checks the connected micro:bit and chooses fast programming when possible.</li>
+        <li>If a full wireless update is required, the app guides the browser through the required second micro:bit selection.</li>
+        <li>If Bluetooth drops during fast programming, the app reconnects and restarts that transfer once automatically.</li>
+        <li>If Bluetooth drops during a full update and the current browser identity cannot reconnect, press Connect once and select the micro:bit again. If recovery mode is found, programming continues automatically.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
     </details>
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.10</span>
+      <span id="buildLabel">Build 2.4.11</span>
     </footer>
   </main>
 
   <dialog id="fullDfuWarningDialog" class="warning-dialog">
     <div class="warning-mark">!</div>
-    <h2>Full application programming required</h2>
+    <h2>Full wireless programming required</h2>
     <p id="fullDfuReason"></p>
     <div class="hash-grid">
       <span>HEX runtime</span><code id="warningHexHash"></code>
       <span>Device runtime</span><code id="warningDeviceHash"></code>
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
-    <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>If the micro:bit is running normally, the app uses the bonded Buttonless DFU sequence before programming. If live GATT verification shows the micro:bit is already in Secure DFU recovery mode, the app skips that reboot step and programs the selected HEX directly. The first firmware data object retains the v2.4.8 stabilization, and verified bootloader transport retains v2.4.9 automatic resume.</p>
+    <p><strong>This will replace the installed application runtime and user program.</strong> Keep the micro:bit powered throughout the update.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
-      <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
+      <span>I understand and will keep the micro:bit powered throughout the transfer.</span>
     </label>
     <div class="dialog-actions">
       <button id="cancelFullDfu" class="secondary">Cancel</button>
-      <button id="confirmFullDfu" class="danger" disabled>Enter DFU mode</button>
+      <button id="confirmFullDfu" class="danger" disabled>Continue</button>
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.10"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.11"></script>
 </body>
 </html>
