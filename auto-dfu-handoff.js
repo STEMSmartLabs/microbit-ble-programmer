@@ -1,17 +1,16 @@
 /**
- * Secure DFU handoff for v2.4.4.
+ * Secure DFU handoff for v2.4.5.
  *
- * After the bonded Buttonless DFU command is accepted, the user presses
- * Continue. That click opens the real Web Bluetooth chooser so Chrome performs
- * a fresh scan for the rebooted Secure DFU identity. The old application
- * BluetoothDevice is never substituted for the chooser result.
+ * Runtime mode and pre-authorization are best-effort only. The actual secured
+ * Buttonless DFU write/reboot outcome decides whether the app proceeds. After
+ * reboot, Continue always opens a fresh Web Bluetooth chooser.
  */
-import './bluetooth-security-reset.js?v=2.4.4';
-import { NordicSecureDfu } from './dfu.js?v=2.4.4';
-import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.4';
-import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.4';
+import { NordicSecureDfu } from './dfu.js?v=2.4.5';
+import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.5';
+import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.5';
+import { loadRuntimeIndependentDfuApp } from './app-dfu-entry-policy.js?v=2.4.5';
 
-const HANDOFF_VERSION = '2.4.4';
+const HANDOFF_VERSION = '2.4.5';
 installChecksumPacedFirmwareTransfer(NordicSecureDfu);
 installFreshDfuChooserHandoff(NordicSecureDfu, {
   readinessDelayMs: 1800,
@@ -24,9 +23,7 @@ function watchDfuSelector() {
 
   const updateLabel = () => {
     if (button.hidden) return;
-    button.textContent = button.disabled
-      ? 'Preparing DFU…'
-      : 'Continue';
+    button.textContent = button.disabled ? 'Preparing DFU…' : 'Continue';
   };
 
   new MutationObserver(updateLabel).observe(button, {
@@ -36,7 +33,7 @@ function watchDfuSelector() {
   updateLabel();
 }
 
-await import('./app.js?v=2.4.4');
+await loadRuntimeIndependentDfuApp({ version: HANDOFF_VERSION });
 
 const appVersion = document.getElementById('appVersion');
 const buildLabel = document.getElementById('buildLabel');
@@ -44,19 +41,6 @@ const status = document.getElementById('status');
 if (appVersion) appVersion.textContent = `v${HANDOFF_VERSION}`;
 if (buildLabel) buildLabel.textContent = `Build ${HANDOFF_VERSION}`;
 if (status) {
-  const normalizeVisibleVersion = () => {
-    const normalized = status.textContent.replace(
-      /STEM Smart Labs Bluetooth Programmer v[0-9.]+/g,
-      `STEM Smart Labs Bluetooth Programmer v${HANDOFF_VERSION}`,
-    );
-    if (normalized !== status.textContent) status.textContent = normalized;
-  };
-  normalizeVisibleVersion();
-  new MutationObserver(normalizeVisibleVersion).observe(status, {
-    childList: true,
-    characterData: true,
-    subtree: true,
-  });
-  status.textContent += `\nDFU v${HANDOFF_VERSION}: fresh chooser handoff, one short GATT attempt per selection, firmware PRNs disabled, checksum-paced data objects.`;
+  status.textContent += `\nDFU v${HANDOFF_VERSION}: runtime-independent DFU entry; real secured 0004 write is always attempted when available; fresh chooser handoff; checksum-paced firmware transfer.`;
 }
 watchDfuSelector();
