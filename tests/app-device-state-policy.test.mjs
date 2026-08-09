@@ -13,12 +13,13 @@ function patchedSource() {
   });
 }
 
-test('Connect accepts BBC micro:bit and DfuTarg but classifies by live GATT services', () => {
+test('Connect accepts application, DfuTarg and advertised FE59 recovery identities but classifies by live GATT', () => {
   const patched = patchedSource();
 
   assert.match(patched, /const APP_VERSION = '2\.4\.10'/);
   assert.match(patched, /\{ namePrefix: 'BBC micro:bit' \}/);
   assert.match(patched, /\{ namePrefix: 'DfuTarg' \}/);
+  assert.match(patched, /\{ services: \[DFU_SERVICE_UUID\] \}/);
   assert.match(patched, /let secureDfuAvailable = false/);
   assert.match(patched, /secureCharacteristicsAvailable = Boolean\(dfu\?\.control && dfu\?\.packet\)/);
   assert.match(patched, /applicationServicesAvailable = Boolean\(partialCharacteristic \|\| buttonlessAvailable\)/);
@@ -34,6 +35,10 @@ test('Program directly recovers an already verified Secure DFU bootloader', () =
   assert.match(patched, /already a verified Secure DFU bootloader/);
   assert.match(patched, /await dfu\.update\(bootloaderDevice, packageToFlash\.initPacket, packageToFlash\.firmware\)/);
   assert.match(patched, /without application-mode DFU entry/);
+
+  const initIndex = patched.indexOf('const initPacket = await createMicrobitV2InitPacket(preparedFirmware.applicationBin);', patched.indexOf('async function runDirectSecureDfuRecovery'));
+  const busyIndex = patched.indexOf('flashInProgress = true;', patched.indexOf('async function runDirectSecureDfuRecovery'));
+  assert.ok(initIndex >= 0 && busyIndex >= 0 && initIndex < busyIndex, 'init packet must be prepared before locking the recovery UI');
 });
 
 test('ambiguous cached service table fails safe as application mode', () => {
