@@ -19,7 +19,7 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.11</small></h1>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.12</small></h1>
         <p>Choose a program, connect your micro:bit and program it wirelessly.</p>
       </div>
     </header>
@@ -96,14 +96,14 @@
         <li>The app checks the connected micro:bit and chooses fast programming when possible.</li>
         <li>If a full wireless update is required, the app guides the browser through the required second micro:bit selection.</li>
         <li>If Bluetooth drops during fast programming, the app reconnects and restarts that transfer once automatically.</li>
-        <li>If Bluetooth drops during a full update and the current browser identity cannot reconnect, press Connect once and select the micro:bit again. If recovery mode is found, programming continues automatically.</li>
+        <li>If a full update is interrupted and Bluetooth cannot reconnect, press the micro:bit reset button once and then press Connect. The app will detect whether it is in recovery mode or normal mode and continue safely.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
     </details>
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.11</span>
+      <span id="buildLabel">Build 2.4.12</span>
     </footer>
   </main>
 
@@ -127,6 +127,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.11"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.12"></script>
 </body>
 </html>
