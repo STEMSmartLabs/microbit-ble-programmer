@@ -1,17 +1,18 @@
 /**
- * Secure DFU handoff for v2.4.6.
+ * Secure DFU handoff for v2.4.7.
  *
  * Partial flashing remains unchanged. When full DFU is required, pairing mode
- * is prepared once, then the app performs one real secured Buttonless DFU write
- * without separate 0004 notification authorization probes. After reboot,
- * Continue opens a fresh Web Bluetooth chooser.
+ * is prepared once, bonded Buttonless DFU indications on characteristic 0004
+ * are enabled as required by Nordic SDK14+ bond sharing, and opcode 0x01 is
+ * sent next on that same secured connection. After reboot, Continue opens a
+ * fresh Web Bluetooth chooser.
  */
-import { NordicSecureDfu } from './dfu.js?v=2.4.6';
-import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.6';
-import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.6';
-import { loadRuntimeIndependentDfuApp } from './app-dfu-entry-policy.js?v=2.4.6';
+import { NordicSecureDfu } from './dfu.js?v=2.4.7';
+import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.7';
+import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.7';
+import { loadRuntimeIndependentDfuApp } from './app-dfu-entry-policy.js?v=2.4.7';
 
-const HANDOFF_VERSION = '2.4.6';
+const HANDOFF_VERSION = '2.4.7';
 installChecksumPacedFirmwareTransfer(NordicSecureDfu);
 installFreshDfuChooserHandoff(NordicSecureDfu, {
   readinessDelayMs: 1800,
@@ -42,6 +43,6 @@ const status = document.getElementById('status');
 if (appVersion) appVersion.textContent = `v${HANDOFF_VERSION}`;
 if (buildLabel) buildLabel.textContent = `Build ${HANDOFF_VERSION}`;
 if (status) {
-  status.textContent += `\nDFU v${HANDOFF_VERSION}: partial path unchanged; one pairing preparation; no separate 0004 notification authorization probes; one real secured reboot write; fresh chooser handoff; checksum-paced firmware transfer.`;
+  status.textContent += `\nDFU v${HANDOFF_VERSION}: partial path unchanged; Nordic bonded 0004 indications enabled before opcode 0x01; one reconnect only after pairing restart; fresh chooser handoff; checksum-paced firmware transfer.`;
 }
 watchDfuSelector();
