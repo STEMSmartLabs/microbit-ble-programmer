@@ -29,6 +29,7 @@ async function establishBondBeforeFullDfu() {
 
 async function prepareAndEnterFullDfu(info, reason) {
   const bondResult = await establishBondBeforeFullDfu();
+  await quiescePartialNotificationsBeforeDfu();
   setState('modeState', bondResult.authorizationVerified ? 'Bond verified' : 'Bond unverified', bondResult.authorizationVerified ? 'good' : 'warn');
   el('progressText').textContent = 'Sending one secured Buttonless DFU command';
   let outcome;
@@ -49,31 +50,38 @@ async function program() {
 }
 `;
 
-test('full DFU uses one direct secured transaction while partial selection stays intact', () => {
+test('full DFU follows Nordic bonded indication-first sequence while partial selection stays intact', () => {
   const patched = patchAppSourceForRuntimeIndependentDfu(legacySource, {
     baseUrl: 'https://program.example.test/',
-    version: '2.4.6',
+    version: '2.4.7',
   });
 
-  assert.match(patched, /const APP_VERSION = '2\.4\.6'/);
-  assert.match(patched, /Skipping separate 0004 notification authorization probes/);
-  assert.match(patched, /one real secured Buttonless DFU write/);
+  assert.match(patched, /const APP_VERSION = '2\.4\.7'/);
+  assert.match(patched, /Enabling bonded Buttonless DFU indications on 0004/);
+  assert.match(patched, /await button\.startNotifications\(\)/);
+  assert.match(patched, /Nordic bonded DFU indication setup is complete/);
+  assert.match(patched, /authorizationVerified: true/);
+  assert.match(patched, /one allowed reconnect/);
   assert.match(patched, /timeoutMs: 6000/);
   assert.doesNotMatch(patched, /const maxAuthorizationAttempts = 2/);
   assert.doesNotMatch(
     patched,
     /throw new Error\('micro:bit did not enter pairing\/programming mode for bonded DFU'\)/,
   );
+  assert.doesNotMatch(
+    patched,
+    /const bondResult = await establishBondBeforeFullDfu\(\);\n  await quiescePartialNotificationsBeforeDfu\(\);/,
+  );
   assert.match(patched, /if \(info\?\.runtimeMatches && info\.layoutMatches\)/);
   assert.match(patched, /await runPartialFlash\(info\)/);
-  assert.match(patched, /https:\/\/program\.example\.test\/dfu\.js\?v=2\.4\.6/);
+  assert.match(patched, /https:\/\/program\.example\.test\/dfu\.js\?v=2\.4\.7/);
 });
 
 test('source patch fails closed when the expected app function is absent', () => {
   assert.throws(
     () => patchAppSourceForRuntimeIndependentDfu("const APP_VERSION = '2.4.0';", {
       baseUrl: 'https://program.example.test/',
-      version: '2.4.6',
+      version: '2.4.7',
     }),
     /full-DFU pairing preparation/,
   );
