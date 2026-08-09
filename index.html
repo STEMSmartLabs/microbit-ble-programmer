@@ -55,7 +55,7 @@
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">When partial programming is compatible, only partial flashing is used. When full DFU is required, the app prepares pairing once, enables the bonded Buttonless DFU indications required by Nordic, then sends the reboot command on that same secured connection. If pairing restarts the application, one reconnect is allowed before repeating the indication setup. When Continue appears, select the rebooted micro:bit from Chrome's fresh Bluetooth scan.</p>
+      <p class="chooser-help">Connect can accept either a normal BBC micro:bit entry or a DfuTarg recovery entry. The app verifies the live Bluetooth services after connection, so a stale device name is ignored. Normal applications use partial programming when compatible or the bonded full-update path when required. A micro:bit already in recovery mode can be programmed directly without another reboot.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -92,10 +92,12 @@
     <details class="help-panel">
       <summary>Compatibility and safety notes</summary>
       <ul>
+        <li>The app determines whether the micro:bit is running its application or Secure DFU from the live connected GATT characteristics, not from the cached Bluetooth name.</li>
         <li>When the installed runtime hash and MakeCode program layout match, the app uses the fast Partial Programming Service.</li>
         <li>When the runtime or layout differs, the app extracts the V2 application region and uses Nordic Secure DFU to replace the runtime and program together.</li>
+        <li>If the micro:bit is already in Secure DFU recovery mode, Program writes the selected HEX directly without sending another Buttonless DFU reboot command.</li>
         <li>Full application DFU does not intentionally replace the SoftDevice, bootloader or interface-chip firmware.</li>
-        <li>The currently installed application must expose Buttonless DFU. The new HEX should also retain Bluetooth/DFU support for future wireless updates.</li>
+        <li>The new HEX should retain Bluetooth/DFU support if future wireless full updates are required.</li>
         <li>If Bluetooth drops after the Secure DFU bootloader is verified, the app automatically reconnects to that same bootloader and resumes from its reported offset and CRC before asking for manual recovery.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
@@ -103,13 +105,13 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.9</span>
+      <span id="buildLabel">Build 2.4.10</span>
     </footer>
   </main>
 
   <dialog id="fullDfuWarningDialog" class="warning-dialog">
     <div class="warning-mark">!</div>
-    <h2>Full application flash required</h2>
+    <h2>Full application programming required</h2>
     <p id="fullDfuReason"></p>
     <div class="hash-grid">
       <span>HEX runtime</span><code id="warningHexHash"></code>
@@ -117,7 +119,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU follows Nordic's bonded Buttonless DFU sequence. The first firmware data object retains the v2.4.8 stabilization. After Secure DFU control 0001 and packet 0002 are verified, transient GATT failures are automatically reconnected and resumed only after the bootloader offset and CRC are re-read.</p>
+    <p>If the micro:bit is running normally, the app uses the bonded Buttonless DFU sequence before programming. If live GATT verification shows the micro:bit is already in Secure DFU recovery mode, the app skips that reboot step and programs the selected HEX directly. The first firmware data object retains the v2.4.8 stabilization, and verified bootloader transport retains v2.4.9 automatic resume.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -128,6 +130,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.9"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.10"></script>
 </body>
 </html>
