@@ -51,11 +51,11 @@
       <div class="actions">
         <button id="connect" class="primary">Connect micro:bit</button>
         <button id="program" class="accent" disabled>Program over Bluetooth</button>
-        <button id="selectDfu" class="dfu" hidden>Select DfuTarg manually</button>
+        <button id="selectDfu" class="dfu" hidden>Continue</button>
         <button id="cancelDfu" class="secondary" hidden>Cancel pending DFU</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">During a full flash, the app verifies bonded access on this phone or computer, classifies the DFU command outcome, and makes one automatic Secure DFU check. Firmware data is validated after each bootloader object using its explicit checksum.</p>
+      <p class="chooser-help">For a full flash, the app verifies the Bluetooth bond and sends the reboot command once. When Continue appears, press it promptly and select the rebooted micro:bit from Chrome's fresh Bluetooth scan. The old application Bluetooth entry is not reused automatically.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -102,7 +102,7 @@
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.3</span>
+      <span id="buildLabel">Build 2.4.4</span>
     </footer>
   </main>
 
@@ -116,7 +116,7 @@
       <span>Application image</span><code id="fullDfuSize"></code>
     </div>
     <p><strong>This will replace the installed application runtime and user program.</strong> The SoftDevice and bootloader are preserved.</p>
-    <p>Full DFU verifies bonded access on the current host and sends the Buttonless DFU command once. Firmware Packet Receipt Notifications are disabled for the normal data stream; each bootloader data object is checked using the bootloader's explicit offset and CRC before it is executed, with slower retransmission only for a missing tail.</p>
+    <p>Full DFU verifies bonded access and sends the Buttonless DFU command once. After the application disconnects, press Continue to open a fresh Chrome Bluetooth scan for the rebooted Secure DFU identity. Each selected candidate gets one short GATT connection attempt. Firmware Packet Receipt Notifications remain disabled; every data object is validated by explicit bootloader offset and CRC before execution.</p>
     <label class="acknowledge">
       <input type="checkbox" id="fullDfuAcknowledge">
       <span>I understand that this is a full application update and will keep the micro:bit powered throughout the transfer.</span>
@@ -130,11 +130,11 @@
   <script type="importmap">
   {
     "imports": {
-      "./dfu.js?v=2.4.0": "./dfu.js?v=2.4.3",
-      "./dfu-entry-state.js?v=2.4.0": "./dfu-entry-state.js?v=2.4.3"
+      "./dfu.js?v=2.4.0": "./dfu.js?v=2.4.4",
+      "./dfu-entry-state.js?v=2.4.0": "./dfu-entry-state.js?v=2.4.4"
     }
   }
   </script>
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.3"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.4"></script>
 </body>
 </html>
