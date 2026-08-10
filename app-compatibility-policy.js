@@ -1,6 +1,6 @@
-import { patchAppSourceForResetRecovery } from './app-recovery-policy.js?v=2.4.15';
+import { patchAppSourceForResetRecovery } from './app-recovery-policy.js?v=2.4.16';
 
-const DEFAULT_VERSION = '2.4.15';
+const DEFAULT_VERSION = '2.4.16';
 const BONDED_DFU_ACCESS_UNAVAILABLE = 'BONDED_DFU_ACCESS_UNAVAILABLE';
 const ANDROID_DFU_AUTHORIZATION_REQUIRED = 'ANDROID_DFU_AUTHORIZATION_REQUIRED';
 
@@ -17,6 +17,13 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
 } = {}) {
   let patched = patchAppSourceForResetRecovery(source, { baseUrl, version });
 
+  patched = replaceOnce(
+    patched,
+    'let recoveryConnectFailures = 0;',
+    'let recoveryConnectFailures = 0;\nlet androidAuthorizationRefreshRequired = false;',
+    'Android authorization refresh state',
+  );
+
   const terminalBondedFailure = "        throw new Error(`Could not enable bonded DFU indications after the one allowed reconnect: ${error.message}.${detail}`);";
   const classifiedBondedFailure = `        const compatibilityError = new Error(\`Could not enable bonded DFU indications after the one allowed reconnect: \${error.message}.\${detail}\`);
         compatibilityError.code = '${BONDED_DFU_ACCESS_UNAVAILABLE}';
@@ -27,6 +34,44 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
     terminalBondedFailure,
     classifiedBondedFailure,
     'terminal bonded DFU access classification',
+  );
+
+  // Once Android reports protected Secure DFU responses as unauthorized,
+  // recovery mode must not automatically resume the pending package again.
+  // Only a return to the normal application clears this gate.
+  patched = replaceOnce(
+    patched,
+    `      if (pendingDfu) {
+        recoveryReconnectPending = false;`,
+    `      if (androidAuthorizationRefreshRequired) {
+        recoveryReconnectPending = true;
+        dfuChooserReady = false;
+        setState('connectionState', 'Power cycle needed', 'warn');
+        setState('modeState', 'Waiting for application', 'warn');
+        setState('methodState', 'Android recovery', 'warn');
+        el('progressText').textContent = 'Power the micro:bit off and on, enter pairing mode if needed, then Connect';
+        log('Android authorization refresh is still required. Recovery mode was detected again, so the pending program will NOT auto-resume. Power the micro:bit off and on, enter Bluetooth pairing mode if needed, then press Connect. Continue only after the normal application is detected.', 'warn');
+        return;
+      }
+
+      if (pendingDfu) {
+        recoveryReconnectPending = false;`,
+    'block Android recovery auto-resume until application returns',
+  );
+
+  patched = replaceOnce(
+    patched,
+    `    } else {
+      recoveryConnectFailures = 0;
+      if (pendingDfu || recoveryReconnectPending) {`,
+    `    } else {
+      recoveryConnectFailures = 0;
+      if (androidAuthorizationRefreshRequired) {
+        androidAuthorizationRefreshRequired = false;
+        log('Normal application services are visible again after the Android power cycle. Bluetooth authorization refresh is complete; normal programming can continue.', 'good');
+      }
+      if (pendingDfu || recoveryReconnectPending) {`,
+    'clear Android authorization gate only in application mode',
   );
 
   const directRecoveryCatch = `  } catch (error) {
@@ -56,15 +101,16 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
     secureDfuAvailable = false;
 
     if (error?.code === '${ANDROID_DFU_AUTHORIZATION_REQUIRED}') {
+      androidAuthorizationRefreshRequired = true;
       recoveryReconnectPending = true;
       recoveryConnectFailures = 0;
-      setState('connectionState', 'Reset then Connect', 'warn');
+      setState('connectionState', 'Power cycle needed', 'warn');
       setState('modeState', 'Refresh Bluetooth pairing', 'warn');
       setState('methodState', 'Android recovery', 'warn');
-      el('progressText').textContent = 'Press reset once, enter pairing mode if needed, then Connect';
+      el('progressText').textContent = 'Power the micro:bit off and on, enter pairing mode if needed, then Connect';
       log(error.message, 'error');
       log('${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU bootloader, but protected DFU responses are not authorized in this recovery connection.', 'warn');
-      log('Do not keep reconnecting to recovery mode. Press the micro:bit reset button once, enter Bluetooth pairing mode if needed, then press Connect. The app needs to see the normal application before full wireless programming is tried again.', 'warn');
+      log('Do not reconnect to recovery mode again. Power the micro:bit off and on, enter Bluetooth pairing mode if needed, then press Connect. The pending program will stay prepared but will not auto-resume until the normal application is detected.', 'warn');
       return;
     }
 
@@ -84,6 +130,31 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
     'Android direct recovery authorization handling',
   );
 
+  // The browser-required second selection has a separate catch. Route the
+  // Android authorization failure into the same power-cycle gate there too.
+  patched = replaceOnce(
+    patched,
+    `    if (error?.code === 'DFU_CANDIDATE_APPLICATION') {`,
+    `    if (error?.code === '${ANDROID_DFU_AUTHORIZATION_REQUIRED}') {
+      pendingDfu = packageToFlash;
+      dfuChooserReady = false;
+      androidAuthorizationRefreshRequired = true;
+      recoveryReconnectPending = true;
+      recoveryConnectFailures = 0;
+      try { bootloaderDevice?.gatt?.disconnect?.(); } catch {}
+      applicationDevice = null;
+      partialCharacteristic = null;
+      buttonlessAvailable = false;
+      secureDfuAvailable = false;
+      setState('connectionState', 'Power cycle needed', 'warn');
+      setState('modeState', 'Refresh Bluetooth pairing', 'warn');
+      setState('methodState', 'Android recovery', 'warn');
+      el('progressText').textContent = 'Power the micro:bit off and on, enter pairing mode if needed, then Connect';
+      log('Android Secure DFU authorization was not restored after the second Bluetooth selection. Power the micro:bit off and on; the pending program is preserved and will not auto-resume until normal application services are detected.', 'warn');
+    } else if (error?.code === 'DFU_CANDIDATE_APPLICATION') {`,
+    'Android second-selection authorization handling',
+  );
+
   const genericProgramCatch = `  } catch (error) {
     log(error.message, 'error');
     el('progressText').textContent = 'Stopped: ' + error.message;
@@ -91,13 +162,14 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
 
   const compatibilityAwareCatch = `  } catch (error) {
     if (error?.code === '${ANDROID_DFU_AUTHORIZATION_REQUIRED}') {
+      androidAuthorizationRefreshRequired = true;
       log(error.message, 'error');
       log('${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU service, but the protected control notifications are not authorized in the current recovery connection.', 'warn');
-      log('Press the micro:bit reset button once. Enter Bluetooth pairing mode if needed, pair it if Android asks, then press Connect. The app needs to see the normal application again before entering full programming.', 'warn');
-      setState('connectionState', 'Reset then Connect', 'warn');
+      log('Power the micro:bit off and on. Enter Bluetooth pairing mode if needed, pair it if Android asks, then press Connect. The app must see the normal application before full wireless programming is tried again.', 'warn');
+      setState('connectionState', 'Power cycle needed', 'warn');
       setState('modeState', 'Refresh Bluetooth pairing', 'warn');
       setState('methodState', 'Android recovery', 'warn');
-      el('progressText').textContent = 'Press reset once, enter pairing mode if needed, then Connect';
+      el('progressText').textContent = 'Power the micro:bit off and on, enter pairing mode if needed, then Connect';
       recoveryReconnectPending = true;
       recoveryConnectFailures = 0;
       return;
@@ -120,6 +192,7 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
       dfuChooserReady = false;
       recoveryReconnectPending = false;
       recoveryConnectFailures = 0;
+      androidAuthorizationRefreshRequired = false;
       return;
     }
 
@@ -134,11 +207,23 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
     'customer compatibility guidance',
   );
 
+  // A new file or explicit disconnect starts a clean workflow.
+  patched = patched.replaceAll(
+    'recoveryConnectFailures = 0;\n  partialRetryUsed = false;',
+    'recoveryConnectFailures = 0;\n  androidAuthorizationRefreshRequired = false;\n  partialRetryUsed = false;',
+  );
+
   if (!patched.includes(`compatibilityError.code = '${BONDED_DFU_ACCESS_UNAVAILABLE}'`)) {
     throw new Error('Terminal bonded DFU access error was not classified');
   }
-  if (!patched.includes(`${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU bootloader`)) {
-    throw new Error('Android direct recovery authorization handling was not installed');
+  if (!patched.includes('let androidAuthorizationRefreshRequired = false;')) {
+    throw new Error('Android authorization refresh state was not installed');
+  }
+  if (!patched.includes('Recovery mode was detected again, so the pending program will NOT auto-resume')) {
+    throw new Error('Android recovery auto-resume gate was not installed');
+  }
+  if (!patched.includes('Power the micro:bit off and on')) {
+    throw new Error('Android power-cycle guidance was not installed');
   }
   if (!patched.includes('USB setup required once')) {
     throw new Error('USB provisioning guidance was not installed');
