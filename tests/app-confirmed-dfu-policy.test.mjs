@@ -4,10 +4,18 @@ import fs from 'node:fs';
 
 import { patchAppSourceForConfirmedDfuHandoff } from '../app-confirmed-dfu-policy.js';
 
+const policySource = fs.readFileSync(new URL('../app-confirmed-dfu-policy.js', import.meta.url), 'utf8');
 const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
 const patched = patchAppSourceForConfirmedDfuHandoff(source, {
   baseUrl: new URL('../app-confirmed-dfu-policy.js', import.meta.url).href,
-  version: '2.4.18',
+  version: '2.4.19',
+});
+
+test('confirmed DFU source patch initializes without string-method replaceOnce typo', () => {
+  assert.doesNotMatch(policySource, /patched\.replaceOnce\s*\(/);
+  assert.match(policySource, /patched = replaceOnce\s*\(/);
+  assert.equal(typeof patched, 'string');
+  assert.ok(patched.length > source.length);
 });
 
 test('latches a positively confirmed Android DFU reboot', () => {
