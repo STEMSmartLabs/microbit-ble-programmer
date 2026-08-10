@@ -21,8 +21,8 @@ test('wraps read-only browser GATT authorization errors instead of mutating DOME
   assert.doesNotMatch(source, /error\.code = ANDROID_DFU_AUTHORIZATION_REQUIRED/);
 });
 
-test('extends stale application-service rediscovery to 3s + 5s + 8s on Android', () => {
-  assert.match(source, /applicationRediscoveryDelaysMs = \[3000, 5000, 8000\]/);
+test('uses approximately forty-second stale application-service rediscovery window on Android', () => {
+  assert.match(source, /applicationRediscoveryDelaysMs = \[3000, 5000, 5000, 5000, 5000, 5000\]/);
+  assert.match(source, /approximately 40-second DFU transition window/);
   assert.match(source, /Android live services changed to Secure DFU/);
-  assert.match(source, /extended DFU transition grace period/);
 });
