@@ -43,16 +43,8 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
   // cycles; only normal application services clear the authorization gate.
   patched = replaceOnce(
     patched,
-    `      if (androidAuthorizationRefreshRequired) {
-        recoveryReconnectPending = true;
-        dfuChooserReady = false;
-        setState('connectionState', 'Power cycle needed', 'warn');
-        setState('modeState', 'Waiting for application', 'warn');
-        setState('methodState', 'Android recovery', 'warn');
-        el('progressText').textContent = 'Power the micro:bit off and on, enter pairing mode if needed, then Connect';
-        log('Android authorization refresh is still required. Recovery mode was detected again, so the pending program will NOT auto-resume. Power the micro:bit off and on, enter Bluetooth pairing mode if needed, then press Connect. Continue only after the normal application is detected.', 'warn');
-        return;
-      }`,
+    `      if (pendingDfu) {
+        recoveryReconnectPending = false;`,
     `      if (androidAuthorizationRefreshRequired) {
         recoveryReconnectPending = true;
         dfuChooserReady = false;
@@ -91,35 +83,49 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
         if (refreshedToApplication) {
           androidAuthorizationRefreshRequired = false;
           recoveryConnectFailures = 0;
+          pendingDfu = null;
+          dfuChooserReady = false;
+          recoveryReconnectPending = false;
+          setState('connectionState', selectedDevice.name || 'micro:bit', 'good');
+          setState('modeState', 'Ready', 'good');
+          setState('runtimeState', 'Not checked', 'neutral');
+          setState('methodState', 'Automatic', 'neutral');
+          el('progressText').textContent = preparedFirmware
+            ? 'Bluetooth refreshed — press Program'
+            : 'Bluetooth refreshed — choose a HEX file';
           log('Normal application services are visible again after one power cycle and a quiet Android Bluetooth refresh. Normal programming can continue.', 'good');
-          // Continue below through the normal application branch in this same Connect.
-        } else {
-          try { selectedDevice.gatt?.disconnect?.(); } catch {}
-          applicationDevice = null;
-          partialCharacteristic = null;
-          buttonlessAvailable = false;
-          secureDfuAvailable = false;
-          setState('connectionState', 'Refresh pending', 'warn');
-          setState('modeState', 'Waiting for application', 'warn');
-          setState('methodState', 'Android recovery', 'warn');
-          el('progressText').textContent = 'Android Bluetooth is still refreshing — wait briefly, then press Connect once';
-          log('Android still shows the previous recovery services after the quiet refresh window. Do not power-cycle again. Wait briefly, then press Connect once to request a fresh browser Bluetooth view.', 'warn');
+          log('Services: '
+            + (partialCharacteristic ? 'partial programming' : '')
+            + (partialCharacteristic && buttonlessAvailable ? ' + ' : '')
+            + (buttonlessAvailable ? 'full programming' : '')
+            + '.');
           return;
         }
-      }`,
+
+        try { selectedDevice.gatt?.disconnect?.(); } catch {}
+        applicationDevice = null;
+        partialCharacteristic = null;
+        buttonlessAvailable = false;
+        secureDfuAvailable = false;
+        setState('connectionState', 'Refresh pending', 'warn');
+        setState('modeState', 'Waiting for application', 'warn');
+        setState('methodState', 'Android recovery', 'warn');
+        el('progressText').textContent = 'Android Bluetooth is still refreshing — wait briefly, then press Connect once';
+        log('Android still shows the previous recovery services after the quiet refresh window. Do not power-cycle again. Wait briefly, then press Connect once to request a fresh browser Bluetooth view.', 'warn');
+        return;
+      }
+
+      if (pendingDfu) {
+        recoveryReconnectPending = false;`,
     'quiet Android authorization refresh after one power cycle',
   );
 
-  // The normal application branch clears the gate if it was already visible on
-  // the first Connect attempt.
+  // If application services are already fresh on the first post-power-cycle
+  // Connect, clear the gate immediately and continue through normal programming.
   patched = replaceOnce(
     patched,
     `    } else {
       recoveryConnectFailures = 0;
-      if (androidAuthorizationRefreshRequired) {
-        androidAuthorizationRefreshRequired = false;
-        log('Normal application services are visible again after the Android power cycle. Bluetooth authorization refresh is complete; normal programming can continue.', 'good');
-      }
       if (pendingDfu || recoveryReconnectPending) {`,
     `    } else {
       recoveryConnectFailures = 0;
@@ -128,7 +134,7 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
         log('Normal application services are visible again after the Android power cycle. Bluetooth authorization refresh is complete; normal programming can continue.', 'good');
       }
       if (pendingDfu || recoveryReconnectPending) {`,
-    'retain Android authorization gate clearing in application mode',
+    'clear Android authorization gate in application mode',
   );
 
   const directRecoveryCatch = `  } catch (error) {
