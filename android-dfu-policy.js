@@ -1,4 +1,4 @@
-const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2414');
+const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2415');
 const ANDROID_DFU_AUTHORIZATION_REQUIRED = 'ANDROID_DFU_AUTHORIZATION_REQUIRED';
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -6,15 +6,21 @@ function isAndroidBrowser() {
   return /Android/i.test(String(globalThis.navigator?.userAgent || ''));
 }
 
-function tagAndroidAuthorizationError(error) {
+export function wrapAndroidAuthorizationError(error) {
   const text = String(error?.message || error || '');
   if (!/GATT operation not permitted/i.test(text)) return error;
-  error.code = ANDROID_DFU_AUTHORIZATION_REQUIRED;
-  return error;
+
+  // DOMException.code is read-only in Android Chrome. Never mutate the browser
+  // exception: wrap it in a normal Error whose application code is writable.
+  const wrapped = new Error(text || 'GATT operation not permitted');
+  wrapped.name = 'AndroidDfuAuthorizationError';
+  wrapped.code = ANDROID_DFU_AUTHORIZATION_REQUIRED;
+  wrapped.cause = error;
+  return wrapped;
 }
 
 export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
-  applicationRediscoveryDelaysMs = [3000, 5000],
+  applicationRediscoveryDelaysMs = [3000, 5000, 8000],
 } = {}) {
   const prototype = NordicSecureDfu?.prototype;
   if (!prototype || typeof prototype.connect !== 'function') return false;
@@ -38,7 +44,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       if (!android) throw error;
 
       if (/GATT operation not permitted/i.test(String(error?.message || ''))) {
-        throw tagAndroidAuthorizationError(error);
+        throw wrapAndroidAuthorizationError(error);
       }
 
       if (error?.code !== 'DFU_CANDIDATE_APPLICATION') throw error;
@@ -46,7 +52,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       let lastError = error;
       const delays = Array.isArray(applicationRediscoveryDelaysMs)
         ? applicationRediscoveryDelaysMs.map(value => Math.max(0, Number(value) || 0))
-        : [3000, 5000];
+        : [3000, 5000, 8000];
 
       for (let attempt = 0; attempt < delays.length; attempt++) {
         const delayMs = delays[attempt];
@@ -67,7 +73,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
           return result;
         } catch (retryError) {
           if (/GATT operation not permitted/i.test(String(retryError?.message || ''))) {
-            throw tagAndroidAuthorizationError(retryError);
+            throw wrapAndroidAuthorizationError(retryError);
           }
           if (retryError?.code !== 'DFU_CANDIDATE_APPLICATION') throw retryError;
           lastError = retryError;
@@ -75,7 +81,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       }
 
       this.log(
-        'Android still exposes the application Bluetooth service after the DFU transition grace period. '
+        'Android still exposes the application Bluetooth service after the extended DFU transition grace period. '
         + 'Returning control to the normal Connect workflow.',
         'warn',
       );
