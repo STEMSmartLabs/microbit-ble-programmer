@@ -7,7 +7,7 @@ import { patchAppSourceForBondedDfuCompatibility } from '../app-compatibility-po
 const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
 const patched = patchAppSourceForBondedDfuCompatibility(source, {
   baseUrl: new URL('../app-compatibility-policy.js', import.meta.url).href,
-  version: '2.4.14',
+  version: '2.4.15',
 });
 
 test('classifies only the terminal bonded 0004 access failure', () => {
@@ -16,9 +16,16 @@ test('classifies only the terminal bonded 0004 access failure', () => {
   assert.match(patched, /Could not enable bonded DFU indications on 0004:/);
 });
 
-test('shows Android reset-pair-connect guidance for Secure DFU authorization failure', () => {
+test('handles Android authorization failure inside direct recovery instead of generic reconnect', () => {
+  assert.match(patched, /Android Chrome can see the Secure DFU bootloader/);
+  assert.match(patched, /Do not keep reconnecting to recovery mode/);
+  assert.match(patched, /Press reset once, enter pairing mode if needed, then Connect/);
+  assert.match(patched, /recoveryConnectFailures = 0/);
+});
+
+test('keeps Android reset-pair-connect guidance at the Program level', () => {
   assert.match(patched, /ANDROID_DFU_AUTHORIZATION_REQUIRED/);
-  assert.match(patched, /Press reset once, pair if asked, then Connect/);
+  assert.match(patched, /Refresh Bluetooth pairing/);
   assert.match(patched, /Android recovery/);
 });
 
