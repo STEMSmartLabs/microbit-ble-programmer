@@ -1,5 +1,6 @@
-const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2416');
+const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2417');
 const ANDROID_DFU_AUTHORIZATION_REQUIRED = 'ANDROID_DFU_AUTHORIZATION_REQUIRED';
+const ANDROID_DFU_TRANSITION_STALE = 'ANDROID_DFU_TRANSITION_STALE';
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function isAndroidBrowser() {
@@ -19,12 +20,23 @@ export function wrapAndroidAuthorizationError(error) {
   return wrapped;
 }
 
+function wrapAndroidTransitionStaleError(error) {
+  const wrapped = new Error(
+    'Android Bluetooth is still showing the previous application services after the confirmed DFU reboot',
+  );
+  wrapped.name = 'AndroidDfuTransitionStaleError';
+  wrapped.code = ANDROID_DFU_TRANSITION_STALE;
+  wrapped.cause = error;
+  return wrapped;
+}
+
 export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
-  // Android Chrome can retain the application GATT table for tens of seconds
-  // after the secured reboot is accepted. Together with the 1.8 s GATT-ready
-  // delay in the common handoff policy, this sequence gives roughly a 40 s
-  // transition window before returning control to the user.
-  applicationRediscoveryDelaysMs = [3000, 5000, 5000, 5000, 5000, 5000],
+  // Do not hammer Android GATT while the same bonded micro:bit changes its
+  // service database. Recent device logs show that repeated 5-second connects
+  // keep returning the stale table. Use three long quiet periods instead. With
+  // the common 1.8-second readiness delay, this allows roughly 50 seconds for
+  // Android/Chrome to converge before asking for one fresh Connect.
+  applicationRediscoveryDelaysMs = [10000, 15000, 20000],
 } = {}) {
   const prototype = NordicSecureDfu?.prototype;
   if (!prototype || typeof prototype.connect !== 'function') return false;
@@ -56,14 +68,14 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       let lastError = error;
       const delays = Array.isArray(applicationRediscoveryDelaysMs)
         ? applicationRediscoveryDelaysMs.map(value => Math.max(0, Number(value) || 0))
-        : [3000, 5000, 5000, 5000, 5000, 5000];
+        : [10000, 15000, 20000];
 
       for (let attempt = 0; attempt < delays.length; attempt++) {
         const delayMs = delays[attempt];
         this.log(
-          'Android is still showing the application Bluetooth service after the DFU reboot. '
-          + 'Waiting ' + (Math.round(delayMs / 100) / 10)
-          + ' seconds, then reconnecting the same selected micro:bit and rediscovering live services ('
+          'Android is still showing the previous application Bluetooth services after the confirmed DFU reboot. '
+          + 'Leaving GATT disconnected and quiet for ' + (Math.round(delayMs / 100) / 10)
+          + ' seconds before the next live-service check ('
           + (attempt + 1) + '/' + delays.length + ')…',
           'warn',
         );
@@ -73,7 +85,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
 
         try {
           const result = await originalConnect.call(this, device);
-          this.log('Android live services changed to Secure DFU; continuing automatically.');
+          this.log('Android Bluetooth now exposes Secure DFU services; continuing automatically.');
           return result;
         } catch (retryError) {
           if (/GATT operation not permitted/i.test(String(retryError?.message || ''))) {
@@ -84,16 +96,17 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
         }
       }
 
+      try { device?.gatt?.disconnect?.(); } catch {}
       this.log(
-        'Android still exposes the application Bluetooth service after the approximately 40-second DFU transition window. '
-        + 'Returning control to the normal Connect workflow.',
+        'Android is still showing the previous application services after the quiet DFU transition window. '
+        + 'A fresh browser Connect is required to refresh the selected Bluetooth identity.',
         'warn',
       );
-      throw lastError;
+      throw wrapAndroidTransitionStaleError(lastError);
     }
   };
 
   return true;
 }
 
-export { ANDROID_DFU_AUTHORIZATION_REQUIRED };
+export { ANDROID_DFU_AUTHORIZATION_REQUIRED, ANDROID_DFU_TRANSITION_STALE };
