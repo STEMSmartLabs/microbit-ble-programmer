@@ -1,18 +1,19 @@
 /**
- * Simplified Bluetooth programming workflow for v2.4.19.
+ * Simplified Bluetooth programming workflow for v2.4.20.
  *
- * Proven transfer behavior is retained. v2.4.19 fixes only an initialization
- * typo in the confirmed-DFU handoff source patch. The v2.4.18 Android state
- * machine behavior is otherwise unchanged.
+ * Proven DFU behavior remains unchanged. v2.4.20 adds one Android-only fallback:
+ * if the confirmed DFU reboot is followed by the existing exhausted stale-GATT
+ * transition window, preserve the pending DFU package, reload the page once to
+ * create a fresh Web Bluetooth context, then resume from Secure DFU if visible.
  */
-import { NordicSecureDfu } from './dfu.js?v=2.4.19';
-import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.19';
-import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.19';
-import { installVerifiedDfuResume } from './dfu-resume-policy.js?v=2.4.19';
-import { installAndroidDfuTransitionPolicy } from './android-dfu-policy.js?v=2.4.19';
-import { loadConfirmedDfuHandoffApp } from './app-confirmed-dfu-policy.js?v=2.4.19';
+import { NordicSecureDfu } from './dfu.js?v=2.4.20';
+import { installChecksumPacedFirmwareTransfer } from './dfu-transfer-policy.js?v=2.4.20';
+import { installFreshDfuChooserHandoff } from './dfu-handoff-policy.js?v=2.4.20';
+import { installVerifiedDfuResume } from './dfu-resume-policy.js?v=2.4.20';
+import { installAndroidDfuTransitionPolicy } from './android-dfu-policy.js?v=2.4.20';
+import { loadAndroidRealmRecoveryApp } from './app-android-realm-recovery-policy.js?v=2.4.20';
 
-const HANDOFF_VERSION = '2.4.19';
+const HANDOFF_VERSION = '2.4.20';
 const appVersion = document.getElementById('appVersion');
 const buildLabel = document.getElementById('buildLabel');
 const status = document.getElementById('status');
@@ -35,9 +36,9 @@ installAndroidDfuTransitionPolicy(NordicSecureDfu, {
 });
 
 try {
-  await loadConfirmedDfuHandoffApp({ version: HANDOFF_VERSION });
+  await loadAndroidRealmRecoveryApp({ version: HANDOFF_VERSION });
   if (status) {
-    status.textContent += `\nv${HANDOFF_VERSION}: Connect / Program / Disconnect workflow active. Normal firmware transfer pacing is unchanged. The confirmed Android DFU handoff state from v2.4.18 is active; v2.4.19 fixes the source-patch initialization typo only.`;
+    status.textContent += `\nv${HANDOFF_VERSION}: Connect / Program / Disconnect workflow active. Existing DFU transfer and Android transition behavior is unchanged. Only if the confirmed DFU reboot still exposes stale application services after the normal 10/15/20-second transition checks, Android preserves the pending program, reloads this page once to recreate the Web Bluetooth context, then asks for one Connect to continue.`;
   }
 } catch (error) {
   const message = error?.message || String(error);
