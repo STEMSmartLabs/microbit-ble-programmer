@@ -29,9 +29,6 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
     'terminal bonded DFU access classification',
   );
 
-  // Direct recovery has its own catch and consumes NordicSecureDfu.connect()
-  // errors before program() can see them. Handle the Android authorization
-  // failure here so it cannot fall through to the generic reconnect loop.
   const directRecoveryCatch = `  } catch (error) {
     pendingDfu = recoveryPackage;
     dfuChooserReady = false;
@@ -140,7 +137,7 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
   if (!patched.includes(`compatibilityError.code = '${BONDED_DFU_ACCESS_UNAVAILABLE}'`)) {
     throw new Error('Terminal bonded DFU access error was not classified');
   }
-  if (!patched.includes('${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU bootloader')) {
+  if (!patched.includes(`${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU bootloader`)) {
     throw new Error('Android direct recovery authorization handling was not installed');
   }
   if (!patched.includes('USB setup required once')) {
