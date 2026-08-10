@@ -1,7 +1,8 @@
-import { patchAppSourceForResetRecovery } from './app-recovery-policy.js?v=2.4.13';
+import { patchAppSourceForResetRecovery } from './app-recovery-policy.js?v=2.4.14';
 
-const DEFAULT_VERSION = '2.4.13';
+const DEFAULT_VERSION = '2.4.14';
 const BONDED_DFU_ACCESS_UNAVAILABLE = 'BONDED_DFU_ACCESS_UNAVAILABLE';
+const ANDROID_DFU_AUTHORIZATION_REQUIRED = 'ANDROID_DFU_AUTHORIZATION_REQUIRED';
 
 function replaceOnce(source, before, after, label) {
   if (!source.includes(before)) {
@@ -16,10 +17,6 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
 } = {}) {
   let patched = patchAppSourceForResetRecovery(source, { baseUrl, version });
 
-  // Only classify the terminal security case: the protected 0004 CCCD failed,
-  // pairing/security restarted the application, the app reconnected once, and
-  // enabling 0004 failed again. A single transient 0004 failure is deliberately
-  // left untouched so it can still be retried normally.
   const terminalBondedFailure = "        throw new Error(`Could not enable bonded DFU indications after the one allowed reconnect: ${error.message}.${detail}`);";
   const classifiedBondedFailure = `        const compatibilityError = new Error(\`Could not enable bonded DFU indications after the one allowed reconnect: \${error.message}.\${detail}\`);
         compatibilityError.code = '${BONDED_DFU_ACCESS_UNAVAILABLE}';
@@ -38,6 +35,18 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
   } finally {`;
 
   const compatibilityAwareCatch = `  } catch (error) {
+    if (error?.code === '${ANDROID_DFU_AUTHORIZATION_REQUIRED}') {
+      log(error.message, 'error');
+      log('${ANDROID_DFU_AUTHORIZATION_REQUIRED}: Android Chrome can see the Secure DFU service, but the protected control notifications are not authorized in the current recovery connection.', 'warn');
+      log('Press the micro:bit reset button once. Pair it if Android asks, then press Connect. The app needs to see the normal application again so protected Bluetooth access can be refreshed before entering full programming.', 'warn');
+      setState('connectionState', 'Reset then Connect', 'warn');
+      setState('modeState', 'Refresh Bluetooth pairing', 'warn');
+      setState('methodState', 'Android recovery', 'warn');
+      el('progressText').textContent = 'Press reset once, pair if asked, then Connect';
+      recoveryReconnectPending = true;
+      return;
+    }
+
     if (error?.code === '${BONDED_DFU_ACCESS_UNAVAILABLE}') {
       log(error.message, 'error');
       log('${BONDED_DFU_ACCESS_UNAVAILABLE}: the installed Bluetooth runtime could not enable protected full-programming access after the allowed pairing/security restart and reconnect. Wireless full programming is stopped for this setup.', 'error');
@@ -72,11 +81,11 @@ export function patchAppSourceForBondedDfuCompatibility(source, {
   if (!patched.includes(`compatibilityError.code = '${BONDED_DFU_ACCESS_UNAVAILABLE}'`)) {
     throw new Error('Terminal bonded DFU access error was not classified');
   }
+  if (!patched.includes(ANDROID_DFU_AUTHORIZATION_REQUIRED)) {
+    throw new Error('Android Secure DFU authorization recovery guidance was not installed');
+  }
   if (!patched.includes('USB setup required once')) {
     throw new Error('USB provisioning guidance was not installed');
-  }
-  if (!patched.includes('Use USB once to install the approved Bluetooth base program')) {
-    throw new Error('Approved Bluetooth base program guidance was not installed');
   }
 
   return patched;
