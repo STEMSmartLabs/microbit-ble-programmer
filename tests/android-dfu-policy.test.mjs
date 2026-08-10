@@ -21,8 +21,15 @@ test('wraps read-only browser GATT authorization errors instead of mutating DOME
   assert.doesNotMatch(source, /error\.code = ANDROID_DFU_AUTHORIZATION_REQUIRED/);
 });
 
-test('uses approximately forty-second stale application-service rediscovery window on Android', () => {
-  assert.match(source, /applicationRediscoveryDelaysMs = \[3000, 5000, 5000, 5000, 5000, 5000\]/);
-  assert.match(source, /approximately 40-second DFU transition window/);
-  assert.match(source, /Android live services changed to Secure DFU/);
+test('uses long quiet application-to-DFU refresh windows on Android', () => {
+  assert.match(source, /applicationRediscoveryDelaysMs = \[10000, 15000, 20000\]/);
+  assert.match(source, /Leaving GATT disconnected and quiet/);
+  assert.match(source, /roughly 50 seconds/);
+  assert.match(source, /Android Bluetooth now exposes Secure DFU services/);
+});
+
+test('classifies stale post-opcode Android services separately from real application mode', () => {
+  assert.match(source, /ANDROID_DFU_TRANSITION_STALE/);
+  assert.match(source, /previous application services after the confirmed DFU reboot/);
+  assert.match(source, /fresh browser Connect/);
 });
