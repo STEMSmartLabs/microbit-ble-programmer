@@ -8,7 +8,7 @@
   <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
   <link rel="icon" type="image/png" href="assets/stem-smart-labs-logo.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=2.4.15">
+  <link rel="stylesheet" href="style.css?v=2.4.16">
 </head>
 <body>
   <div class="background-orb orb-one"></div>
@@ -19,7 +19,7 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.15</small></h1>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.16</small></h1>
         <p>Choose a program, connect your micro:bit and program it wirelessly.</p>
       </div>
     </header>
@@ -43,9 +43,7 @@
     </section>
 
     <section class="control-panel" aria-labelledby="connectHeading">
-      <div class="section-heading">
-        <div><span class="step">2</span><h2 id="connectHeading">Connect and program</h2></div>
-      </div>
+      <div class="section-heading"><div><span class="step">2</span><h2 id="connectHeading">Connect and program</h2></div></div>
       <div class="actions">
         <button id="connect" class="primary">Connect</button>
         <button id="program" class="accent" disabled>Program</button>
@@ -54,7 +52,6 @@
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
       <p class="chooser-help">The app automatically chooses the safest programming method and guides any Bluetooth recovery that is required.</p>
-
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
         <div><span>micro:bit</span><strong id="modeState" data-state="neutral">Unknown</strong></div>
@@ -65,26 +62,14 @@
     </section>
 
     <section class="progress-panel" aria-live="polite">
-      <div class="progress-row">
-        <strong id="progressPercent">0%</strong>
-        <span id="progressText">Waiting for a HEX file and micro:bit connection</span>
-      </div>
+      <div class="progress-row"><strong id="progressPercent">0%</strong><span id="progressText">Waiting for a HEX file and micro:bit connection</span></div>
       <progress id="progress" max="100" value="0"></progress>
-      <div class="progress-meta">
-        <span id="bytesText">0 B / 0 B</span>
-        <span id="timeText">Elapsed 00:00 · ETA --:--</span>
-      </div>
+      <div class="progress-meta"><span id="bytesText">0 B / 0 B</span><span id="timeText">Elapsed 00:00 · ETA --:--</span></div>
     </section>
 
     <details class="log-panel">
       <summary>Activity and diagnostics</summary>
-      <div class="log-heading">
-        <span></span>
-        <div>
-          <button id="copyLog" class="text-button">Copy log</button>
-          <button id="clearLog" class="text-button">Clear</button>
-        </div>
-      </div>
+      <div class="log-heading"><span></span><div><button id="copyLog" class="text-button">Copy log</button><button id="clearLog" class="text-button">Clear</button></div></div>
       <pre id="status">Ready.</pre>
     </details>
 
@@ -93,39 +78,26 @@
       <ul>
         <li>The app checks the connected micro:bit and chooses fast programming when possible.</li>
         <li>If a full wireless update is required, the browser may ask you to select the micro:bit again.</li>
-        <li>On Android, if recovery Bluetooth authorization is unavailable, do not keep reconnecting to recovery mode. Press reset once, enter Bluetooth pairing mode if needed, pair if Android asks, then press Connect.</li>
-        <li>On Android, after a confirmed full-programming reboot the app allows extra time and rechecks the same selected micro:bit automatically if Chrome still temporarily shows the normal application service.</li>
+        <li>On Android, if recovery Bluetooth authorization is unavailable, power the micro:bit off and on, enter Bluetooth pairing mode if needed, then press Connect. The app will wait until normal application services are seen before trying full programming again.</li>
+        <li>On Android, after a confirmed full-programming reboot the app rechecks the same selected micro:bit automatically for about 40 seconds if Chrome still temporarily shows the normal application service.</li>
         <li>If the normal application itself cannot establish protected full-programming access after its allowed security restart and reconnect, use USB once to install the approved Bluetooth base program.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
     </details>
 
-    <footer>
-      <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.15</span>
-    </footer>
+    <footer><span>STEM Smart Labs</span><span id="buildLabel">Build 2.4.16</span></footer>
   </main>
 
   <dialog id="fullDfuWarningDialog" class="warning-dialog">
     <div class="warning-mark">!</div>
     <h2>Full wireless programming required</h2>
     <p id="fullDfuReason"></p>
-    <div class="hash-grid">
-      <span>HEX runtime</span><code id="warningHexHash"></code>
-      <span>Device runtime</span><code id="warningDeviceHash"></code>
-      <span>Application image</span><code id="fullDfuSize"></code>
-    </div>
+    <div class="hash-grid"><span>HEX runtime</span><code id="warningHexHash"></code><span>Device runtime</span><code id="warningDeviceHash"></code><span>Application image</span><code id="fullDfuSize"></code></div>
     <p><strong>This will replace the installed application runtime and user program.</strong> Keep the micro:bit powered throughout the update.</p>
-    <label class="acknowledge">
-      <input type="checkbox" id="fullDfuAcknowledge">
-      <span>I understand and will keep the micro:bit powered throughout the transfer.</span>
-    </label>
-    <div class="dialog-actions">
-      <button id="cancelFullDfu" class="secondary">Cancel</button>
-      <button id="confirmFullDfu" class="danger" disabled>Continue</button>
-    </div>
+    <label class="acknowledge"><input type="checkbox" id="fullDfuAcknowledge"><span>I understand and will keep the micro:bit powered throughout the transfer.</span></label>
+    <div class="dialog-actions"><button id="cancelFullDfu" class="secondary">Cancel</button><button id="confirmFullDfu" class="danger" disabled>Continue</button></div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.15"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.16"></script>
 </body>
 </html>
