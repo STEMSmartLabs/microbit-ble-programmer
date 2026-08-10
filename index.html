@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#882c84">
   <meta name="description" content="Program a BBC micro:bit V2 over Bluetooth.">
   <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
@@ -19,14 +19,12 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.13</small></h1>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.14</small></h1>
         <p>Choose a program, connect your micro:bit and program it wirelessly.</p>
       </div>
     </header>
 
-    <div class="notice">
-      Keep the micro:bit powered and close to this computer while programming.
-    </div>
+    <div class="notice">Keep the micro:bit powered and close while programming.</div>
 
     <section class="file-panel" aria-labelledby="fileHeading">
       <div class="section-heading">
@@ -55,7 +53,7 @@
         <button id="cancelDfu" class="secondary" hidden aria-hidden="true" tabindex="-1">Cancel</button>
         <button id="disconnect" class="secondary" disabled>Disconnect</button>
       </div>
-      <p class="chooser-help">The app automatically chooses the safest programming method. If Bluetooth is interrupted, it will try to reconnect. If the current Bluetooth setup cannot support a full wireless update, the app will stop and recommend a one-time USB setup instead of repeating the same failed wireless step.</p>
+      <p class="chooser-help">The app automatically chooses the safest programming method and guides any Bluetooth recovery that is required.</p>
 
       <div class="state-grid">
         <div><span>Bluetooth</span><strong id="connectionState" data-state="neutral">Disconnected</strong></div>
@@ -94,17 +92,17 @@
       <summary>Compatibility and safety notes</summary>
       <ul>
         <li>The app checks the connected micro:bit and chooses fast programming when possible.</li>
-        <li>If a full wireless update is required, the app guides the browser through the required second micro:bit selection.</li>
-        <li>If Bluetooth drops during fast programming, the app reconnects and restarts that transfer once automatically.</li>
-        <li>If a full update is interrupted and Bluetooth cannot reconnect, press the micro:bit reset button once and then press Connect. The app will detect whether it is in recovery mode or normal mode and continue safely.</li>
-        <li>If the installed Bluetooth runtime cannot enable the protected full-programming connection even after its allowed security restart and reconnect, use USB once to install the approved Bluetooth base program before continuing wirelessly.</li>
+        <li>If a full wireless update is required, the browser may ask you to select the micro:bit again.</li>
+        <li>On Android, if recovery Bluetooth authorization is unavailable, press reset once, pair if Android asks, then press Connect so the application can refresh Bluetooth access.</li>
+        <li>On Android, after a confirmed full-programming reboot the app waits and rechecks the same selected micro:bit if Chrome still temporarily shows the normal application service.</li>
+        <li>If the installed Bluetooth runtime itself cannot enable protected full-programming access after its allowed security restart and reconnect, use USB once to install the approved Bluetooth base program.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
     </details>
 
     <footer>
       <span>STEM Smart Labs</span>
-      <span id="buildLabel">Build 2.4.13</span>
+      <span id="buildLabel">Build 2.4.14</span>
     </footer>
   </main>
 
@@ -128,6 +126,6 @@
     </div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.13"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.14"></script>
 </body>
 </html>
