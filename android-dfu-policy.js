@@ -1,4 +1,4 @@
-const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2415');
+const PATCH_FLAG = Symbol.for('stem.microbit.androidDfuTransitionV2416');
 const ANDROID_DFU_AUTHORIZATION_REQUIRED = 'ANDROID_DFU_AUTHORIZATION_REQUIRED';
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -20,7 +20,11 @@ export function wrapAndroidAuthorizationError(error) {
 }
 
 export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
-  applicationRediscoveryDelaysMs = [3000, 5000, 8000],
+  // Android Chrome can retain the application GATT table for tens of seconds
+  // after the secured reboot is accepted. Together with the 1.8 s GATT-ready
+  // delay in the common handoff policy, this sequence gives roughly a 40 s
+  // transition window before returning control to the user.
+  applicationRediscoveryDelaysMs = [3000, 5000, 5000, 5000, 5000, 5000],
 } = {}) {
   const prototype = NordicSecureDfu?.prototype;
   if (!prototype || typeof prototype.connect !== 'function') return false;
@@ -52,7 +56,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       let lastError = error;
       const delays = Array.isArray(applicationRediscoveryDelaysMs)
         ? applicationRediscoveryDelaysMs.map(value => Math.max(0, Number(value) || 0))
-        : [3000, 5000, 8000];
+        : [3000, 5000, 5000, 5000, 5000, 5000];
 
       for (let attempt = 0; attempt < delays.length; attempt++) {
         const delayMs = delays[attempt];
@@ -81,7 +85,7 @@ export function installAndroidDfuTransitionPolicy(NordicSecureDfu, {
       }
 
       this.log(
-        'Android still exposes the application Bluetooth service after the extended DFU transition grace period. '
+        'Android still exposes the application Bluetooth service after the approximately 40-second DFU transition window. '
         + 'Returning control to the normal Connect workflow.',
         'warn',
       );
