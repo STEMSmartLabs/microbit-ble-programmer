@@ -1,6 +1,6 @@
-import { patchAppSourceForBondedDfuCompatibility } from './app-compatibility-policy.js?v=2.4.18';
+import { patchAppSourceForBondedDfuCompatibility } from './app-compatibility-policy.js?v=2.4.19';
 
-const DEFAULT_VERSION = '2.4.18';
+const DEFAULT_VERSION = '2.4.19';
 const ANDROID_DFU_TRANSITION_STALE = 'ANDROID_DFU_TRANSITION_STALE';
 
 function replaceOnce(source, before, after, label) {
@@ -65,10 +65,10 @@ export function patchAppSourceForConfirmedDfuHandoff(source, {
     'clear confirmed reboot latch on genuine Secure DFU',
   );
 
-  // This is the core v2.4.18 rule. After a confirmed Android DFU reboot, an
-  // application-class result is trusted only when BOTH the Partial Programming
-  // service and buttonless 0004 are visible. 0004-only is the stale Android GATT
-  // pattern seen while the physical micro:bit is already showing the DFU plus.
+  // After a confirmed Android DFU reboot, an application-class result is
+  // trusted only when BOTH the Partial Programming service and buttonless 0004
+  // are visible. 0004-only is the stale Android GATT pattern seen while the
+  // physical micro:bit is already showing the DFU plus.
   patched = replaceOnce(
     patched,
     `    } else {
@@ -130,7 +130,7 @@ export function patchAppSourceForConfirmedDfuHandoff(source, {
   );
 
   // Explicit user actions start a clean handoff state.
-  patched = patched.replaceOnce(
+  patched = replaceOnce(
     patched,
     `async function loadHexFile(file) {
   if (!file) return;
