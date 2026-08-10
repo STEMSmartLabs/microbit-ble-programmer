@@ -8,7 +8,7 @@
   <title>STEM Smart Labs · micro:bit Bluetooth Programmer</title>
   <link rel="icon" type="image/png" href="assets/stem-smart-labs-logo.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=2.4.16">
+  <link rel="stylesheet" href="style.css?v=2.4.17">
 </head>
 <body>
   <div class="background-orb orb-one"></div>
@@ -19,7 +19,7 @@
       <img class="brand-logo" src="assets/stem-smart-labs-logo.png" alt="STEM Smart Labs">
       <div class="brand-copy">
         <div class="eyebrow">Wireless micro:bit programming</div>
-        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.16</small></h1>
+        <h1>micro:bit Bluetooth Programmer <small id="appVersion">v2.4.17</small></h1>
         <p>Choose a program, connect your micro:bit and program it wirelessly.</p>
       </div>
     </header>
@@ -78,14 +78,14 @@
       <ul>
         <li>The app checks the connected micro:bit and chooses fast programming when possible.</li>
         <li>If a full wireless update is required, the browser may ask you to select the micro:bit again.</li>
-        <li>On Android, if recovery Bluetooth authorization is unavailable, power the micro:bit off and on, enter Bluetooth pairing mode if needed, then press Connect. The app will wait until normal application services are seen before trying full programming again.</li>
-        <li>On Android, after a confirmed full-programming reboot the app rechecks the same selected micro:bit automatically for about 40 seconds if Chrome still temporarily shows the normal application service.</li>
+        <li>On Android, if recovery Bluetooth authorization is unavailable, power the micro:bit off and on once, then press Connect. The app will leave Bluetooth quiet and wait for Android to refresh; do not keep power-cycling.</li>
+        <li>On Android, after a confirmed full-programming reboot the app uses longer quiet Bluetooth refresh intervals instead of repeated rapid reconnects if Chrome still shows the old application services.</li>
         <li>If the normal application itself cannot establish protected full-programming access after its allowed security restart and reconnect, use USB once to install the approved Bluetooth base program.</li>
         <li>Keep the micro:bit powered and the browser tab open until completion.</li>
       </ul>
     </details>
 
-    <footer><span>STEM Smart Labs</span><span id="buildLabel">Build 2.4.16</span></footer>
+    <footer><span>STEM Smart Labs</span><span id="buildLabel">Build 2.4.17</span></footer>
   </main>
 
   <dialog id="fullDfuWarningDialog" class="warning-dialog">
@@ -98,6 +98,6 @@
     <div class="dialog-actions"><button id="cancelFullDfu" class="secondary">Cancel</button><button id="confirmFullDfu" class="danger" disabled>Continue</button></div>
   </dialog>
 
-  <script type="module" src="./auto-dfu-handoff.js?v=2.4.16"></script>
+  <script type="module" src="./auto-dfu-handoff.js?v=2.4.17"></script>
 </body>
 </html>
